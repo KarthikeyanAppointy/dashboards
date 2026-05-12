@@ -1,0 +1,137 @@
+/* =============================================
+   Summary Cards
+   ============================================= */
+
+.summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+/* Individual Card */
+
+.summary-card {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+  display: flex;
+  flex-direction: column;
+}
+
+.summary-card:hover {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  transform: translateY(-2px);
+}
+
+/* Card Header */
+
+.card-header {
+  padding: 14px 20px;
+  background: #fafafa;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.card-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #546e7a;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+/* Card Body */
+
+.card-body {
+  padding: 20px;
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  flex: 1;
+}
+
+.card-metric {
+  flex: 1;
+  text-align: center;
+}
+
+.metric-value {
+  font-size: 2.2rem;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -1px;
+}
+
+.metric-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #78909c;
+  margin-top: 4px;
+}
+
+.metric-sub {
+  font-size: 0.8rem;
+  color: #90a4ae;
+  margin-top: 2px;
+}
+
+.success-metric .metric-value {
+  color: #2e7d32;
+}
+
+.failure-metric .metric-value {
+  color: #c62828;
+}
+
+.card-divider {
+  width: 1px;
+  align-self: stretch;
+  background: #e0e0e0;
+}
+
+/* Card Footer */
+
+.card-footer {
+  padding: 12px 20px;
+  background: #fafafa;
+  border-top: 1px solid #f0f0f0;
+}
+
+.card-total {
+  font-size: 0.8rem;
+  color: #78909c;
+  font-weight: 500;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.card-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: #e0e0e0;
+  display: flex;
+  overflow: hidden;
+}
+
+.card-bar-success {
+  background: linear-gradient(90deg, #43a047, #66bb6a);
+  transition: width 0.5s ease;
+  border-radius: 4px 0 0 4px;
+}
+
+.card-bar-failure {
+  background: linear-gradient(90deg, #e53935, #ef5350);
+  transition: width 0.5s ease;
+  border-radius: 0 4px 4px 0;
+}
+
+/* Responsive */
+
+@media (max-width: 600px) {
+  .summary-cards {
+    grid-template-columns: 1fr;
+  }
+}

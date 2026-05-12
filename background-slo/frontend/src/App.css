@@ -1,0 +1,194 @@
+/* =============================================
+   Global Styles & CSS Reset
+   ============================================= */
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family:
+        -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans,
+        Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+    background-color: #f0f2f5;
+    color: #333;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* =============================================
+   App Container
+   ============================================= */
+
+.app {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* =============================================
+   Header / Navbar
+   ============================================= */
+
+.app-header {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    color: #fff;
+    padding: 16px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.header-title {
+    font-size: 1.35rem;
+    font-weight: 700;
+    letter-spacing: -0.3px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.header-icon {
+    color: #4fc3f7;
+    font-size: 1.2rem;
+}
+
+.header-domain {
+    background: rgba(255, 255, 255, 0.12);
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: #b0bec5;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.loading-indicator {
+    font-size: 0.8rem;
+    color: #4fc3f7;
+    animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.4;
+    }
+}
+
+.last-updated {
+    font-size: 0.8rem;
+    color: #90a4ae;
+    font-weight: 400;
+}
+
+/* =============================================
+   Error Banner
+   ============================================= */
+
+.error-banner {
+    background: #ffebee;
+    color: #c62828;
+    padding: 12px 32px;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 2px solid #ef9a9a;
+}
+
+.error-icon {
+    font-size: 1.1rem;
+}
+
+/* =============================================
+   Main Content
+   ============================================= */
+
+.app-main {
+    max-width: 1400px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 24px 32px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+    flex: 1;
+}
+
+/* =============================================
+   Initial Loading
+   ============================================= */
+
+.initial-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 80px 20px;
+    color: #78909c;
+}
+
+.initial-loading p {
+    margin-top: 16px;
+    font-size: 1rem;
+}
+
+.spinner {
+    width: 40px;
+    height: 40px;
+    border: 4px solid #e0e0e0;
+    border-top: 4px solid #1565c0;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* =============================================
+   Responsive
+   ============================================= */
+
+@media (max-width: 768px) {
+    .app-header {
+        padding: 12px 16px;
+    }
+
+    .app-main {
+        padding: 16px;
+    }
+
+    .header-title {
+        font-size: 1.1rem;
+    }
+}

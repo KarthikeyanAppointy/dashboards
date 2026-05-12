@@ -1,0 +1,199 @@
+# =============================================================================
+# SLO Dashboard Helm Chart Values
+# =============================================================================
+
+# -- Number of replicas for the deployment
+replicaCount: 1
+
+# -- Override the base name of the chart
+nameOverride: ""
+# -- Override the full name of the release
+fullnameOverride: ""
+
+image:
+  # -- Container image repository
+  repository: europe-west1-docker.pkg.dev/appointy-global/common/background-slo
+  # -- Overrides the image tag (default is Chart.appVersion)
+  tag: "v1"
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+  # -- Image pull secrets
+  pullSecrets:
+    - name: gcr-registry
+
+# -- Environment variables passed to the container
+# These will be set directly on the pod (not via ConfigMap) for sensitive data.
+# See `configmap` for non-sensitive environment variables.
+extraEnv: []
+# - name: FOO
+#   value: bar
+# - name: SECRET
+#   valueFrom:
+#     secretKeyRef:
+#       name: my-secret
+#       key: my-key
+
+# -- ConfigMap values (non-sensitive environment variables)
+configmap:
+  # -- Application port
+  PORT: "8080"
+  # -- Path to frontend static files
+  FRONTEND_DIR: "/app/frontend"
+  # -- Default tenant name seeded on first run
+  DEFAULT_TENANT_NAME: "Default"
+  # -- Default domain ID for the seed tenant
+  DEFAULT_DOMAIN_ID: "508e3ea6-3166-445c-b748-1434029cd205"
+  # -- Default domain name for the seed tenant
+  DEFAULT_DOMAIN_NAME: "qa-admin"
+  # -- Default Elasticsearch endpoint
+  # NOTE: When running inside Kubernetes, use the internal service name,
+  # e.g. "http://elasticsearch-master.elasticsearch.svc.cluster.local:9200"
+  DEFAULT_ES: "cadence-1-1-0-elasticsearch-master-hl"
+  # -- Default Elasticsearch index
+  DEFAULT_INDEX: "cadence-visibility"
+
+# -- Secret values (sensitive environment variables)
+# These will be stored as a Kubernetes Secret and injected as env vars.
+secret:
+  # -- PostgreSQL connection string
+  # If empty, defaults to: postgres://postgres:postgres@{{ .Release.Name }}-postgresql:5432/slo_dashboard?sslmode=disable
+  DATABASE_URL: ""
+
+# -- Service configuration
+service:
+  type: LoadBalancer
+  # -- Service port (should match the application port)
+  port: 8080
+
+# -- Ingress configuration
+ingress:
+  # -- Enable ingress
+  enabled: false
+  # -- Ingress class name
+  className: ""
+  # -- Ingress annotations
+  annotations: {}
+  #   kubernetes.io/ingress.class: nginx
+  #   cert-manager.io/cluster-issuer: letsencrypt-prod
+  # -- Ingress hostnames
+  hosts:
+    - host: slo-dashboard.local
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- TLS configuration
+  tls: []
+  #   - secretName: slo-dashboard-tls
+  #     hosts:
+  #       - slo-dashboard.local
+
+# -- Resource requests and limits
+resources:
+  # -- Resource requests
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  # -- Resource limits
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# -- Horizontal Pod Autoscaler configuration
+autoscaling:
+  # -- Enable HPA
+  enabled: false
+  # -- Minimum replicas
+  minReplicas: 1
+  # -- Maximum replicas
+  maxReplicas: 10
+  # -- Target CPU utilization percentage
+  targetCPUUtilizationPercentage: 80
+  # -- Target memory utilization percentage
+  targetMemoryUtilizationPercentage: ""
+
+# -- PodDisruptionBudget configuration
+podDisruptionBudget:
+  # -- Enable PDB
+  enabled: false
+  # -- Min available pods (mutually exclusive with maxUnavailable)
+  minAvailable: ""
+  # -- Max unavailable pods (mutually exclusive with minAvailable)
+  maxUnavailable: ""
+
+# -- Node selector for pod assignment
+nodeSelector: {}
+
+# -- Tolerations for pod assignment
+tolerations: []
+
+# -- Affinity for pod assignment
+affinity: {}
+
+# -- Pod annotations
+podAnnotations: {}
+
+# -- Pod security context
+podSecurityContext:
+  # -- Run as a non-root user (matches the Dockerfile's appuser with UID 1000)
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# -- Container security context
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Liveness probe configuration
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# -- Readiness probe configuration
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 3
+  failureThreshold: 5
+
+# -- Service account configuration
+serviceAccount:
+  # -- Create a service account
+  create: true
+  # -- Annotations for the service account
+  annotations: {}
+  # -- The name of the service account to use
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+# -- Priority class name for the pod
+priorityClassName: ""
+
+# -- Update strategy for the deployment
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 25%
+    maxUnavailable: 25%
+
+# -- Additional volumes for the pod
+extraVolumes: []
+# - name: extra-volume
+#   emptyDir: {}
+
+# -- Additional volume mounts for the container
+extraVolumeMounts: []
+# - name: extra-volume
+#   mountPath: /path/inside/container

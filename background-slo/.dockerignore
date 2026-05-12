@@ -1,0 +1,25 @@
+# Dependencies
+backend/vendor/
+frontend/node_modules/
+
+# Build outputs
+frontend/dist/
+
+# Version control
+.git/
+.gitignore
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
