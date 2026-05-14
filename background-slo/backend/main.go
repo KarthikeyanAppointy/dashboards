@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
@@ -11,11 +12,15 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	_ "github.com/lib/pq"
 )
 
@@ -54,6 +59,13 @@ type Tenant struct {
 	ESApiKey   string    `json:"es_api_key"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// SESCloudWatchConfig holds the AWS region for CloudWatch SES metric queries.
+// Credentials are resolved from the environment (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).
+type SESCloudWatchConfig struct {
+	Region        string
+	ConfigSetName string
 }
 
 // TenantStore provides database operations for tenants.
@@ -461,6 +473,32 @@ type ActivityErrorEntry struct {
 	WorkflowType string `json:"workflow_type"`
 	Error        string `json:"error"`
 	Count        int    `json:"count"`
+}
+
+// SESMetricsResponse is the JSON response for the SES metrics endpoint.
+type SESMetricsResponse struct {
+	DomainName       string           `json:"domain_name"`
+	TenantID         int              `json:"tenant_id"`
+	Timestamp        string           `json:"timestamp"`
+	Sends            int64            `json:"sends"`
+	Bounces          int64            `json:"bounces"`
+	PermanentBounces int64            `json:"permanent_bounces"`
+	TransientBounces int64            `json:"transient_bounces"`
+	Complaints       int64            `json:"complaints"`
+	Rejects          int64            `json:"rejects"`
+	BounceRate       string           `json:"bounce_rate"`
+	ComplaintRate    string           `json:"complaint_rate"`
+	ErrorRate        string           `json:"error_rate"`
+	PeriodDays       int              `json:"period_days"`
+	DailyVolume      []SESDailyVolume `json:"daily_volume"`
+}
+
+// SESDailyVolume holds per-day SES send/bounce/complaint counts.
+type SESDailyVolume struct {
+	Date       string `json:"date"`
+	Sends      int64  `json:"sends"`
+	Bounces    int64  `json:"bounces"`
+	Complaints int64  `json:"complaints"`
 }
 
 // APIResponse is the top-level JSON envelope returned by the endpoint.
@@ -1709,6 +1747,449 @@ func writeJSONError(w http.ResponseWriter, message string, statusCode int) {
 }
 
 // ============================================================
+// SES Metrics (AWS CloudWatch)
+// ============================================================
+
+// getSESCloudWatchConfig returns the SES CloudWatch configuration from environment variables.
+func getSESCloudWatchConfig() SESCloudWatchConfig {
+	return SESCloudWatchConfig{
+		Region:        getEnv("AWS_REGION", "us-east-1"),
+		ConfigSetName: getEnv("SES_CONFIG_SET_NAME", ""),
+	}
+}
+
+// queryCloudWatchSESMetrics queries AWS CloudWatch for SES send, bounce, complaint, and reject metrics.
+func queryCloudWatchSESMetrics(ctx context.Context, cfg SESCloudWatchConfig, periodSeconds int32, startTime, endTime time.Time) (*SESMetricsResponse, error) {
+	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(cfg.Region))
+	if err != nil {
+		return nil, fmt.Errorf("load AWS config: %w", err)
+	}
+
+	cw := cloudwatch.NewFromConfig(awsCfg)
+
+	// Base dimensions (optional config set)
+	baseDims := []types.Dimension{}
+	if cfg.ConfigSetName != "" {
+		baseDims = append(baseDims, types.Dimension{
+			Name:  strPtr("ConfigurationSet"),
+			Value: strPtr(cfg.ConfigSetName),
+		})
+	}
+
+	// Sends dimensions
+	sendDims := make([]types.Dimension, len(baseDims))
+	copy(sendDims, baseDims)
+
+	// Permanent bounces dimensions
+	permBounceDims := make([]types.Dimension, len(baseDims)+1)
+	copy(permBounceDims, baseDims)
+	permBounceDims[len(baseDims)] = types.Dimension{
+		Name:  strPtr("BounceType"),
+		Value: strPtr("Permanent"),
+	}
+
+	// Transient bounces dimensions
+	transBounceDims := make([]types.Dimension, len(baseDims)+1)
+	copy(transBounceDims, baseDims)
+	transBounceDims[len(baseDims)] = types.Dimension{
+		Name:  strPtr("BounceType"),
+		Value: strPtr("Transient"),
+	}
+
+	// Complaints dimensions
+	complaintDims := make([]types.Dimension, len(baseDims))
+	copy(complaintDims, baseDims)
+
+	// Rejects dimensions
+	rejectDims := make([]types.Dimension, len(baseDims))
+	copy(rejectDims, baseDims)
+
+	// Helper to query a single metric's aggregate sum
+	type metricResult struct {
+		name  string
+		total float64
+		err   error
+	}
+
+	querySingle := func(metricName string, dims []types.Dimension, stat string, period int32) metricResult {
+		input := &cloudwatch.GetMetricStatisticsInput{
+			Namespace:  strPtr("AWS/SES"),
+			MetricName: strPtr(metricName),
+			Dimensions: dims,
+			StartTime:  &startTime,
+			EndTime:    &endTime,
+			Period:     &period,
+			Statistics: []types.Statistic{types.Statistic(stat)},
+		}
+		out, err := cw.GetMetricStatistics(ctx, input)
+		if err != nil {
+			return metricResult{name: metricName, err: err}
+		}
+		var total float64
+		for _, dp := range out.Datapoints {
+			if dp.Sum != nil {
+				total += *dp.Sum
+			}
+		}
+		return metricResult{name: metricName, total: total}
+	}
+
+	// Helper to query daily data points
+	type dailyResult struct {
+		name       string
+		datapoints []types.Datapoint
+		err        error
+	}
+
+	queryDaily := func(metricName string, dims []types.Dimension, stat string) dailyResult {
+		dailyPeriod := int32(86400) // 1 day in seconds
+		input := &cloudwatch.GetMetricStatisticsInput{
+			Namespace:  strPtr("AWS/SES"),
+			MetricName: strPtr(metricName),
+			Dimensions: dims,
+			StartTime:  &startTime,
+			EndTime:    &endTime,
+			Period:     &dailyPeriod,
+			Statistics: []types.Statistic{types.Statistic(stat)},
+		}
+		out, err := cw.GetMetricStatistics(ctx, input)
+		if err != nil {
+			return dailyResult{name: metricName, err: err}
+		}
+		return dailyResult{name: metricName, datapoints: out.Datapoints}
+	}
+
+	// Run aggregate queries in parallel
+	type aggQuery struct {
+		metric string // CloudWatch metric name
+		key    string // result key for switch
+		dims   []types.Dimension
+	}
+	aggQueries := []aggQuery{
+		{"Send", "sends", sendDims},
+		{"Bounce", "bounces", baseDims},
+		{"Bounce", "perm_bounces", permBounceDims},
+		{"Bounce", "trans_bounces", transBounceDims},
+		{"Complaint", "complaints", complaintDims},
+		{"Reject", "rejects", rejectDims},
+	}
+
+	type aggChanResult struct {
+		key   string
+		total float64
+		err   error
+	}
+	aggCh := make(chan aggChanResult, len(aggQueries))
+	for _, q := range aggQueries {
+		go func(metric string, key string, dims []types.Dimension) {
+			res := querySingle(metric, dims, "Sum", periodSeconds)
+			aggCh <- aggChanResult{key: key, total: res.total, err: res.err}
+		}(q.metric, q.key, q.dims)
+	}
+
+	resp := &SESMetricsResponse{
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		PeriodDays: int(endTime.Sub(startTime).Hours() / 24),
+	}
+
+	for i := 0; i < len(aggQueries); i++ {
+		res := <-aggCh
+		if res.err != nil {
+			log.Printf("WARN: SES metric %s query failed: %v", res.key, res.err)
+			continue
+		}
+		val := int64(res.total)
+		switch res.key {
+		case "sends":
+			resp.Sends = val
+		case "bounces":
+			resp.Bounces = val
+		case "perm_bounces":
+			resp.PermanentBounces = val
+		case "trans_bounces":
+			resp.TransientBounces = val
+		case "complaints":
+			resp.Complaints = val
+		case "rejects":
+			resp.Rejects = val
+		}
+	}
+	close(aggCh)
+
+	if resp.Bounces == 0 {
+		resp.Bounces = resp.PermanentBounces + resp.TransientBounces
+	}
+
+	// Calculate rates
+	totalSends := resp.Sends
+	if totalSends > 0 {
+		bounceRate := float64(resp.Bounces) / float64(totalSends) * 100
+		complaintRate := float64(resp.Complaints) / float64(totalSends) * 100
+		errorRate := float64(resp.Bounces+resp.Complaints+resp.Rejects) / float64(totalSends) * 100
+
+		resp.BounceRate = fmt.Sprintf("%.4f%%", bounceRate)
+		resp.ComplaintRate = fmt.Sprintf("%.4f%%", complaintRate)
+		resp.ErrorRate = fmt.Sprintf("%.4f%%", errorRate)
+	} else {
+		resp.BounceRate = "0.0000%"
+		resp.ComplaintRate = "0.0000%"
+		resp.ErrorRate = "0.0000%"
+	}
+
+	// Run daily queries in parallel
+	type dailyQuery struct {
+		metric string // CloudWatch metric name
+		key    string // result key for switch
+		dims   []types.Dimension
+	}
+	dailyQueries := []dailyQuery{
+		{"Send", "d_sends", sendDims},
+		{"Bounce", "d_bounces", baseDims},
+		{"Complaint", "d_complaints", complaintDims},
+	}
+
+	type dailyChanResult struct {
+		key        string
+		datapoints []types.Datapoint
+		err        error
+	}
+	dailyCh := make(chan dailyChanResult, len(dailyQueries))
+	for _, q := range dailyQueries {
+		go func(metric string, key string, dims []types.Dimension) {
+			res := queryDaily(metric, dims, "Sum")
+			dailyCh <- dailyChanResult{key: key, datapoints: res.datapoints, err: res.err}
+		}(q.metric, q.key, q.dims)
+	}
+
+	// Parse daily breakdown
+	dayMap := make(map[string]*SESDailyVolume)
+	for i := 0; i < len(dailyQueries); i++ {
+		res := <-dailyCh
+		if res.err != nil {
+			log.Printf("WARN: failed to get daily SES data for %s: %v", res.key, res.err)
+			continue
+		}
+		var keyPrefix string
+		switch res.key {
+		case "d_sends":
+			keyPrefix = "sends"
+		case "d_bounces":
+			keyPrefix = "bounces"
+		case "d_complaints":
+			keyPrefix = "complaints"
+		}
+		for _, dp := range res.datapoints {
+			if dp.Timestamp == nil || dp.Sum == nil {
+				continue
+			}
+			dateKey := dp.Timestamp.UTC().Format("2006-01-02")
+			if _, ok := dayMap[dateKey]; !ok {
+				dayMap[dateKey] = &SESDailyVolume{Date: dateKey}
+			}
+			v := int64(*dp.Sum)
+			switch keyPrefix {
+			case "sends":
+				dayMap[dateKey].Sends = v
+			case "bounces":
+				dayMap[dateKey].Bounces = v
+			case "complaints":
+				dayMap[dateKey].Complaints = v
+			}
+		}
+	}
+	close(dailyCh)
+
+	// Sort by date
+	var dates []string
+	for d := range dayMap {
+		dates = append(dates, d)
+	}
+	sort.Strings(dates)
+	for _, d := range dates {
+		resp.DailyVolume = append(resp.DailyVolume, *dayMap[d])
+	}
+
+	return resp, nil
+}
+
+// getSESRegions returns the list of configured SES regions from the environment.
+func getSESRegions() []string {
+	regionsStr := getEnv("SES_REGIONS", "")
+	if regionsStr == "" {
+		// Default to the single configured region
+		return []string{getEnv("AWS_REGION", "us-east-1")}
+	}
+	regions := strings.Split(regionsStr, ",")
+	for i := range regions {
+		regions[i] = strings.TrimSpace(regions[i])
+	}
+	return regions
+}
+
+// sesRegionsHandler handles GET /api/ses-regions.
+func sesRegionsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	regions := getSESRegions()
+	writeJSON(w, map[string]interface{}{"regions": regions}, http.StatusOK)
+}
+
+// sesMetricsHandler handles GET /api/ses-metrics.
+func sesMetricsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse optional query params
+	query := r.URL.Query()
+
+	// Default to last 7 days
+	endTime := time.Now().UTC()
+	startTime := endTime.AddDate(0, 0, -7)
+
+	if ds := query.Get("days"); ds != "" {
+		if days, err := strconv.Atoi(ds); err == nil && days > 0 && days <= 90 {
+			startTime = endTime.AddDate(0, 0, -days)
+		}
+	}
+
+	if ph := query.Get("period_hours"); ph != "" {
+		if hours, err := strconv.Atoi(ph); err == nil && hours > 0 && hours <= 2160 {
+			startTime = endTime.Add(-time.Duration(hours) * time.Hour)
+		}
+	}
+
+	if st := query.Get("start_time"); st != "" {
+		if ts, err := strconv.ParseInt(st, 10, 64); err == nil {
+			startTime = time.Unix(ts, 0).UTC()
+		}
+	}
+
+	if et := query.Get("end_time"); et != "" {
+		if ts, err := strconv.ParseInt(et, 10, 64); err == nil {
+			endTime = time.Unix(ts, 0).UTC()
+		}
+	}
+
+	// Use region from query param, fall back to env
+	region := query.Get("region")
+	if region == "" {
+		region = getEnv("AWS_REGION", "us-east-1")
+	}
+
+	sesCfg := getSESCloudWatchConfig()
+	sesCfg.Region = region
+
+	// Calculate appropriate CloudWatch period based on time range duration
+	duration := endTime.Sub(startTime)
+	var periodSeconds int32
+	switch {
+	case duration <= 2*time.Hour:
+		periodSeconds = 60 // 1 minute
+	case duration <= 12*time.Hour:
+		periodSeconds = 300 // 5 minutes
+	case duration <= 48*time.Hour:
+		periodSeconds = 3600 // 1 hour
+	default:
+		periodSeconds = 86400 // 1 day
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	result, err := queryCloudWatchSESMetrics(ctx, sesCfg, periodSeconds, startTime, endTime)
+	if err != nil {
+		log.Printf("ERROR: ses metrics query: %v", err)
+		writeJSONError(w, fmt.Sprintf("ses metrics: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	result.DomainName = getEnv("SES_DOMAIN_NAME", "ses")
+
+	writeJSON(w, result, http.StatusOK)
+}
+
+// sesDebugHandler lists available SES metrics in CloudWatch for debugging.
+func sesDebugHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	region := r.URL.Query().Get("region")
+	if region == "" {
+		region = getEnv("AWS_REGION", "us-east-1")
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		writeJSONError(w, fmt.Sprintf("load AWS config: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	cw := cloudwatch.NewFromConfig(awsCfg)
+
+	var allMetrics []map[string]interface{}
+	var nextToken *string
+
+	for {
+		out, err := cw.ListMetrics(ctx, &cloudwatch.ListMetricsInput{
+			Namespace: strPtr("AWS/SES"),
+			NextToken: nextToken,
+		})
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("list metrics: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		for _, m := range out.Metrics {
+			dims := make([]map[string]string, 0)
+			for _, d := range m.Dimensions {
+				if d.Name != nil && d.Value != nil {
+					dims = append(dims, map[string]string{*d.Name: *d.Value})
+				}
+			}
+			mn := ""
+			if m.MetricName != nil {
+				mn = *m.MetricName
+			}
+			allMetrics = append(allMetrics, map[string]interface{}{
+				"metric_name": mn,
+				"namespace":   "AWS/SES",
+				"dimensions":  dims,
+			})
+		}
+
+		if out.NextToken == nil || *out.NextToken == "" {
+			break
+		}
+		nextToken = out.NextToken
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"region":  region,
+		"metrics": allMetrics,
+		"count":   len(allMetrics),
+	}, http.StatusOK)
+}
+
+// Helper: string pointer
+func strPtr(s string) *string {
+	return &s
+}
+
+// Helper: bool pointer
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+// ============================================================
 // Main
 // ============================================================
 
@@ -1783,6 +2264,9 @@ func main() {
 	http.HandleFunc("/api/workflows", corsMiddleware(requireAuth(workflowsHandler)))
 	http.HandleFunc("/api/tenants", corsMiddleware(requireAuth(tenantsHandler)))
 	http.HandleFunc("/api/tenants/delete", corsMiddleware(requireAuth(tenantDeleteHandler)))
+	http.HandleFunc("/api/ses-metrics", corsMiddleware(requireAuth(sesMetricsHandler)))
+	http.HandleFunc("/api/ses-regions", corsMiddleware(requireAuth(sesRegionsHandler)))
+	http.HandleFunc("/api/ses-debug", corsMiddleware(requireAuth(sesDebugHandler)))
 	http.HandleFunc("/health", corsMiddleware(healthHandler))
 
 	// Serve frontend static files (built by Vite)
