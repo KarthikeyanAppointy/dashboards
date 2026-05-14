@@ -12,15 +12,17 @@ A multi-tenant monitoring dashboard for Cadence/Temporal workflow rates, success
 │  (port 5173) │     │  (port 8080) │     │  (per tenant)   │
 └──────────────┘     └──────┬───────┘     └─────────────────┘
                             │
-                            ▼
-                     ┌──────────────┐
-                     │  PostgreSQL  │
-                     │   (tenants)  │
-                     └──────────────┘
+                            ├──────────────────────────────────┐
+                            │                                  │
+                            ▼                                  ▼
+                     ┌──────────────┐              ┌──────────────────┐
+                     │  PostgreSQL  │              │  AWS CloudWatch  │
+                     │   (tenants)  │              │  (SES metrics)   │
+                     └──────────────┘              └──────────────────┘
 ```
 
-- **Go Backend** — queries Elasticsearch via `_msearch` (batch API), stores tenant configurations in PostgreSQL
-- **React Frontend** — auto-refreshes every 5s, shows summary cards, workflow rate tables, tasklist latency, and recent failures
+- **Go Backend** — queries Elasticsearch via `_msearch` (batch API) for workflow metrics, queries AWS CloudWatch for SES delivery metrics, stores tenant configurations in PostgreSQL
+- **React Frontend** — auto-refreshes every 5s, shows summary cards, workflow rate tables, tasklist latency, recent failures, and SES delivery metrics (bounce/complaint/error rates)
 - **PostgreSQL** — stores multi-tenant configurations (ES endpoints, domain IDs, etc.)
 - **Elasticsearch** — Cadence/Temporal visibility index (read-only)
 
@@ -32,6 +34,7 @@ A multi-tenant monitoring dashboard for Cadence/Temporal workflow rates, success
 - Node.js 18+
 - Docker & Docker Compose (for PostgreSQL)
 - A running Elasticsearch instance with Cadence/Temporal visibility index
+- AWS credentials with CloudWatch read access for SES metrics (if using the SES dashboard)
 
 ---
 
@@ -56,6 +59,12 @@ DEFAULT_TENANT_NAME="qa-mathnasium" \
 DEFAULT_DOMAIN_ID="e8e74cad-6971-4a5d-8752-e2477531ab68" \
 DEFAULT_DOMAIN_NAME="qa-mathnasium" \
 DEFAULT_ES="http://localhost:9000" \
+AWS_REGION="us-east-1" \
+SES_REGIONS="us-east-1,us-west-2,eu-west-1,eu-central-1,ap-southeast-1,ap-northeast-1,sa-east-1" \
+SES_DOMAIN_NAME="ses" \
+AWS_ACCESS_KEY_ID="your-access-key" \
+AWS_SECRET_ACCESS_KEY="your-secret-key" \
+GOOGLE_CLIENT_ID="your-google-client-id.apps.googleusercontent.com" \
 go run main.go
 ```
 
@@ -85,7 +94,14 @@ Open **http://localhost:5173** in your browser.
 | `DEFAULT_DOMAIN_NAME` | `unknown` | Domain display name |
 | `DEFAULT_ES` | `http://localhost:9000` | ES endpoint for auto-seeded tenant |
 | `DEFAULT_INDEX` | `cadence-visibility` | ES index for auto-seeded tenant |
+| `GOOGLE_CLIENT_ID` | _(empty)_ | Google OAuth client ID for token audience verification (skips check if empty) |
+| `AWS_REGION` | `us-east-1` | AWS region for CloudWatch SES metric queries |
+| `SES_REGIONS` | _(single region from `AWS_REGION`)_ | Comma-separated list of AWS regions for the SES region dropdown (e.g. `us-east-1,us-west-2,eu-west-1`) |
+| `SES_CONFIG_SET_NAME` | _(empty)_ | Optional SES configuration set name to filter metrics by |
+| `SES_DOMAIN_NAME` | `ses` | Display name shown in the SES dashboard header |
 
+> **Note:** AWS credentials are resolved using the standard AWS SDK credential chain (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables, shared credentials file, or IAM roles when running on EC2/ECS).
+>
 > **Note:** If the `tenants` table is empty on startup, the backend auto-creates a default tenant using the `DEFAULT_*` env vars. If tenants already exist, it uses those instead.
 
 ---
@@ -172,6 +188,65 @@ curl -X DELETE "http://localhost:8080/api/tenants/delete?id=2"
 Response:
 ```json
 {"status":"deleted"}
+```
+
+### Get SES Delivery Metrics
+
+```bash
+# Get SES metrics for the last 7 days (default)
+curl "http://localhost:8080/api/ses-metrics"
+
+# Get SES metrics for the last 30 days
+curl "http://localhost:8080/api/ses-metrics?days=30"
+
+# Get SES metrics for a custom time range (Unix timestamps)
+curl "http://localhost:8080/api/ses-metrics?start_time=1712880000&end_time=1715472000"
+```
+
+**Query Parameters:**
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `days` | `7` | Number of days to look back (1–90) |
+| `region` | _(from `AWS_REGION` env)_ | AWS region to query CloudWatch in |
+| `start_time` | _(auto)_ | Custom start time as Unix timestamp (overrides `days`) |
+| `end_time` | _(now)_ | Custom end time as Unix timestamp |
+
+**Response structure:**
+```json
+{
+  "domain_name": "ses",
+  "tenant_id": 0,
+  "timestamp": "2025-05-12T11:30:00Z",
+  "sends": 150000,
+  "bounces": 450,
+  "permanent_bounces": 300,
+  "transient_bounces": 150,
+  "complaints": 25,
+  "rejects": 10,
+  "bounce_rate": "0.3000%",
+  "complaint_rate": "0.0167%",
+  "error_rate": "0.3233%",
+  "period_days": 7,
+  "daily_volume": [
+    {"date": "2025-05-06", "sends": 21000, "bounces": 60, "complaints": 3},
+    {"date": "2025-05-07", "sends": 22000, "bounces": 65, "complaints": 4},
+    {"date": "2025-05-08", "sends": 21500, "bounces": 70, "complaints": 5}
+  ]
+}
+```
+
+### Get Available SES Regions
+
+```bash
+curl "http://localhost:8080/api/ses-regions"
+```
+
+**Response:**
+```json
+{
+  "regions": ["us-east-1", "us-west-2", "eu-west-1", "eu-central-1", "ap-southeast-1", "ap-northeast-1", "sa-east-1"]
+}
 ```
 
 ### Get Workflow Dashboard Data
@@ -269,6 +344,15 @@ Shows the most recent failed workflows (prioritized), backfilled with timed-out 
 ### Tenant Selector
 Switch between tenants using the dropdown in the top-right header. The selected tenant persists in `localStorage`.
 
+### SES Delivery Dashboard
+Monitors AWS SES email delivery health with metrics fetched from AWS CloudWatch:
+
+- **Volume cards** — Total Sends, Bounces (with permanent/transient breakdown), Complaints, and Rejects over a configurable period (7/14/30/90 days)
+- **Rate cards** — Bounce Rate, Complaint Rate, and combined Error Rate with color-coded thresholds (green ≤ 0.1%, yellow ≤ 0.5%, red > 0.5%)
+- **Daily volume table** — Per-day breakdown of sends, bounces (with percentage), and complaints (with percentage)
+
+The SES dashboard is available from the sidebar navigation and fetches data independently from the workflow metrics. Configure via `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optionally `SES_CONFIG_SET_NAME` environment variables.
+
 ---
 
 ## Data Explained
@@ -295,7 +379,7 @@ slo_dashboard/
 ├── README.md
 ├── backend/
 │   ├── go.mod
-│   └── main.go                 # Single-file Go backend (~1050 lines)
+│   └── main.go                 # Single-file Go backend (~1900 lines)
 └── frontend/
     ├── index.html
     ├── package.json
@@ -304,12 +388,19 @@ slo_dashboard/
         ├── main.jsx
         ├── App.jsx
         ├── App.css
+        ├── pages/
+        │   ├── DashboardPage.jsx
+        │   ├── RecentFailuresPage.jsx
+        │   ├── ActivityErrorsPage.jsx
+        │   ├── P100LatencyPage.jsx
+        │   └── SesDashboardPage.jsx
         └── components/
             ├── SummaryCards.jsx / .css
             ├── WorkflowTable.jsx / .css
             ├── RecentFailures.jsx / .css
             ├── TasklistLatency.jsx / .css
-            └── TenantSelector.jsx / .css
+            ├── TenantSelector.jsx / .css
+            └── SesMetrics.jsx / .css
 ```
 
 ### Building

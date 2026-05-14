@@ -7,6 +7,7 @@ import DashboardPage from "./pages/DashboardPage";
 import RecentFailuresPage from "./pages/RecentFailuresPage";
 import ActivityErrorsPage from "./pages/ActivityErrorsPage";
 import P100LatencyPage from "./pages/P100LatencyPage";
+import SesDashboardPage from "./pages/SesDashboardPage";
 import LoginPage from "./pages/LoginPage";
 
 import "./App.css";
@@ -37,6 +38,12 @@ const PAGE_META = {
     title: "P100 Latency",
     description:
       "Compare worst-case latency by workflow window to spot slow paths quickly.",
+  },
+  "/ses": {
+    eyebrow: "Pages / AWS",
+    title: "SES Delivery Dashboard",
+    description:
+      "Monitor AWS SES send volumes, bounce rates, complaint rates, and overall delivery health.",
   },
 };
 
@@ -354,7 +361,9 @@ function App() {
 
             <div className="topbar-actions">
               {data?.domain_name && (
-                <div className="meta-pill meta-pill-domain">{data.domain_name}</div>
+                <div className="meta-pill meta-pill-domain">
+                  {data.domain_name}
+                </div>
               )}
               {loading ? (
                 <div className="meta-pill meta-pill-live">
@@ -365,17 +374,40 @@ function App() {
                 <div className="meta-pill">Updated {lastUpdated}</div>
               ) : null}
 
-              <button
-                className={`topbar-auto-refresh-btn${autoRefresh ? " active" : ""}`}
-                onClick={toggleAutoRefresh}
-                title={autoRefresh ? "Auto-refresh on — click to pause" : "Auto-refresh paused — click to enable"}
-              >
-                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
-                  <path d="M11.5 6.5A5 5 0 112.5 3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                  <polyline points="9,1 11.5,3.5 9,6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-                {autoRefresh ? "Auto" : "Paused"}
-              </button>
+              {location.pathname !== "/ses" && (
+                <button
+                  className={`topbar-auto-refresh-btn${autoRefresh ? " active" : ""}`}
+                  onClick={toggleAutoRefresh}
+                  title={
+                    autoRefresh
+                      ? "Auto-refresh on — click to pause"
+                      : "Auto-refresh paused — click to enable"
+                  }
+                >
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 13 13"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M11.5 6.5A5 5 0 112.5 3.5"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                    />
+                    <polyline
+                      points="9,1 11.5,3.5 9,6"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  {autoRefresh ? "Auto" : "Paused"}
+                </button>
+              )}
               <button className="topbar-primary-btn" onClick={fetchData}>
                 Refresh
               </button>
@@ -386,20 +418,108 @@ function App() {
                 aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
               >
                 {theme === "light" ? (
-                  <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
-                    <circle cx="7.5" cy="7.5" r="3" stroke="currentColor" strokeWidth="1.3"/>
-                    <line x1="7.5" y1="1" x2="7.5" y2="2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                    <line x1="7.5" y1="12.5" x2="7.5" y2="14" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                    <line x1="1" y1="7.5" x2="2.5" y2="7.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                    <line x1="12.5" y1="7.5" x2="14" y2="7.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                    <line x1="3.05" y1="3.05" x2="4.11" y2="4.11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                    <line x1="10.89" y1="10.89" x2="11.95" y2="11.95" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                    <line x1="11.95" y1="3.05" x2="10.89" y2="4.11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                    <line x1="4.11" y1="10.89" x2="3.05" y2="11.95" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 15 15"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <circle
+                      cx="7.5"
+                      cy="7.5"
+                      r="3"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                    />
+                    <line
+                      x1="7.5"
+                      y1="1"
+                      x2="7.5"
+                      y2="2.5"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                    />
+                    <line
+                      x1="7.5"
+                      y1="12.5"
+                      x2="7.5"
+                      y2="14"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                    />
+                    <line
+                      x1="1"
+                      y1="7.5"
+                      x2="2.5"
+                      y2="7.5"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                    />
+                    <line
+                      x1="12.5"
+                      y1="7.5"
+                      x2="14"
+                      y2="7.5"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                    />
+                    <line
+                      x1="3.05"
+                      y1="3.05"
+                      x2="4.11"
+                      y2="4.11"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                    />
+                    <line
+                      x1="10.89"
+                      y1="10.89"
+                      x2="11.95"
+                      y2="11.95"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                    />
+                    <line
+                      x1="11.95"
+                      y1="3.05"
+                      x2="10.89"
+                      y2="4.11"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                    />
+                    <line
+                      x1="4.11"
+                      y1="10.89"
+                      x2="3.05"
+                      y2="11.95"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                    />
                   </svg>
                 ) : (
-                  <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
-                    <path d="M12.5 9.5A6 6 0 015.5 2.5a6 6 0 100 10 6 6 0 007-3z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 15 15"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M12.5 9.5A6 6 0 015.5 2.5a6 6 0 100 10 6 6 0 007-3z"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
                   </svg>
                 )}
               </button>
@@ -422,11 +542,40 @@ function App() {
                     {(user.name ?? user.email ?? "?")[0].toUpperCase()}
                   </div>
                 )}
-                <button className="topbar-signout-btn" onClick={signOut} title="Sign out">
-                  <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
-                    <path d="M5 2H2a1 1 0 00-1 1v7a1 1 0 001 1h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
-                    <polyline points="9,9 12,6.5 9,4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-                    <line x1="12" y1="6.5" x2="5" y2="6.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                <button
+                  className="topbar-signout-btn"
+                  onClick={signOut}
+                  title="Sign out"
+                >
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 13 13"
+                    fill="none"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M5 2H2a1 1 0 00-1 1v7a1 1 0 001 1h3"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                    />
+                    <polyline
+                      points="9,9 12,6.5 9,4"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <line
+                      x1="12"
+                      y1="6.5"
+                      x2="5"
+                      y2="6.5"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                    />
                   </svg>
                 </button>
               </div>
@@ -439,7 +588,9 @@ function App() {
               <select
                 className="toolbar-select"
                 value={tasklistWindow}
-                onChange={(e) => handleTasklistWindowChange(Number(e.target.value))}
+                onChange={(e) =>
+                  handleTasklistWindowChange(Number(e.target.value))
+                }
               >
                 {WINDOW_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -483,7 +634,6 @@ function App() {
         )}
 
         <main className="app-main">
-
           {data && (
             <div className="app-content">
               <Routes>
@@ -534,19 +684,29 @@ function App() {
                   path="/p100-latency"
                   element={<P100LatencyPage data={data} />}
                 />
+                <Route path="/ses" element={null} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </div>
           )}
 
-          {!data && !error && selectedTenantId && (
-            <div className="initial-loading card-surface">
-              <div className="spinner"></div>
-              <p>Loading dashboard data...</p>
+          {location.pathname === "/ses" && (
+            <div className="app-content">
+              <SesDashboardPage />
             </div>
           )}
 
-          {!selectedTenantId && !error && (
+          {!data &&
+            !error &&
+            selectedTenantId &&
+            location.pathname !== "/ses" && (
+              <div className="initial-loading card-surface">
+                <div className="spinner"></div>
+                <p>Loading dashboard data...</p>
+              </div>
+            )}
+
+          {!selectedTenantId && !error && location.pathname !== "/ses" && (
             <div className="initial-loading card-surface">
               <p>No tenants configured. Add tenants via the API.</p>
             </div>
