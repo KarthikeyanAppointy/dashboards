@@ -1,144 +1,66 @@
-/* =============================================
-   Tasklist Latency Section
-   ============================================= */
-
-/* Window Selector */
-
-.window-selector {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.8rem;
-    color: var(--muted-foreground);
-}
-
-.window-selector select {
-    padding: 4px 8px;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    font-size: 0.8rem;
-    font-family: inherit;
-    background: var(--card);
-    color: var(--foreground);
-    cursor: pointer;
-    outline: none;
-}
-
-.window-selector select:focus {
-    border-color: var(--primary);
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
-}
-
 .tl-section {
-    background: var(--card);
-    border-radius: 12px;
-    box-shadow: var(--shadow-md);
     overflow: hidden;
+    background: var(--surface);
+    border: 1px solid var(--separator);
+    border-radius: var(--radius-lg);
 }
-
-/* Empty State */
 
 .tl-empty {
-    padding: 48px 24px;
+    padding: 48px 20px;
     text-align: center;
-    color: var(--muted-foreground);
+    color: var(--fg-tertiary);
+    font-size: 13px;
 }
 
 .tl-empty p {
-    font-size: 0.95rem;
+    margin-top: 8px;
 }
-
-.empty-icon {
-    font-size: 1.5rem;
-    display: block;
-    margin-bottom: 8px;
-}
-
-/* Latency Table */
 
 .tl-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.85rem;
 }
 
-.tl-table thead {
-    background: var(--muted);
-}
-
-.tl-table th {
-    padding: 10px 16px;
+.tl-table thead th {
+    padding: 8px 12px;
     text-align: left;
-    font-weight: 700;
-    font-size: 0.75rem;
+    font-size: 11px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.6px;
-    color: var(--muted-foreground);
-    border-bottom: 2px solid var(--border);
+    letter-spacing: 0.04em;
+    color: var(--fg-tertiary);
+    border-bottom: 1px solid var(--separator);
     white-space: nowrap;
+    background: transparent;
 }
 
-.tl-table th:first-child {
-    padding-left: 24px;
+.tl-table tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--separator);
+    vertical-align: middle;
+    font-size: 13px;
 }
 
-.tl-table th:last-child {
-    padding-right: 24px;
-}
-
-.tl-table tbody tr {
-    border-bottom: 1px solid var(--border);
-    transition: background 0.15s ease;
-}
-
-.tl-table tbody tr:last-child {
+.tl-table tbody tr:last-child td {
     border-bottom: none;
 }
 
-.tl-table tbody tr:hover {
-    background: var(--accent);
-}
-
-.tl-table td {
-    padding: 12px 16px;
-    color: var(--foreground);
-    vertical-align: middle;
-}
-
-.tl-table td:first-child {
-    padding-left: 24px;
-}
-
-.tl-table td:last-child {
-    padding-right: 24px;
-}
-
-/* Tasklist Name Cell */
-
-.cell-tasklist {
-    font-weight: 600;
-    color: var(--foreground);
+.tl-table tbody tr:hover td {
+    background: var(--surface-secondary);
 }
 
 .cell-tasklist code {
-    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
-    font-size: 0.8rem;
-    background: var(--muted);
-    padding: 2px 6px;
-    border-radius: 4px;
-    color: var(--foreground);
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 8px;
+    border-radius: var(--radius-xs);
+    background: var(--surface-secondary);
+    border: 1px solid var(--separator);
+    color: var(--fg);
+    font-family: "SF Mono", "Menlo", "Monaco", monospace;
+    font-size: 11.5px;
 }
-
-/* Workflow Count Cell */
-
-.cell-count {
-    text-align: right;
-    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
-    font-size: 0.8rem;
-    color: var(--muted-foreground);
-}
-
-/* Latency Cell */
 
 .cell-latency {
     display: flex;
@@ -147,59 +69,35 @@
 }
 
 .latency-value {
-    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
-    font-size: 0.85rem;
+    min-width: 64px;
+    color: var(--fg);
     font-weight: 600;
-    white-space: nowrap;
-    min-width: 55px;
+    font-family: "SF Mono", "Menlo", "Monaco", monospace;
+    font-size: 12px;
 }
-
-/* Latency Bar (inline span) */
 
 span.latency-bar {
     display: inline-block;
-    height: 8px;
-    border-radius: 4px;
-    transition: width 0.3s ease;
-    min-width: 4px;
+    height: 4px;
+    border-radius: 2px;
+    min-width: 6px;
 }
 
 span.latency-bar.bar-high {
-    background: linear-gradient(90deg, var(--failure), #d84315);
+    background: var(--danger);
 }
 
 span.latency-bar.bar-medium {
-    background: linear-gradient(90deg, var(--warning), #ff8f00);
+    background: var(--warning);
 }
 
 span.latency-bar.bar-low {
-    background: linear-gradient(90deg, #66bb6a, var(--success));
+    background: var(--success);
 }
 
-/* Responsive */
-
-@media (max-width: 768px) {
-    .tl-section .section-header {
-        padding: 14px 16px;
-    }
-
-    .tl-table th,
-    .tl-table td {
-        padding: 8px 10px;
-    }
-
-    .tl-table th:first-child,
-    .tl-table td:first-child {
-        padding-left: 16px;
-    }
-
-    .tl-table th:last-child,
-    .tl-table td:last-child {
-        padding-right: 16px;
-    }
-
-    .latency-value {
-        font-size: 0.8rem;
-        min-width: 45px;
-    }
+.cell-count {
+    text-align: right;
+    color: var(--fg-secondary);
+    font-family: "SF Mono", "Menlo", "Monaco", monospace;
+    font-size: 12px;
 }

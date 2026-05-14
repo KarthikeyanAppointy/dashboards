@@ -1,126 +1,88 @@
-/* =============================================
-   Workflow Table Section
-   ============================================= */
-
 .workflow-section {
-    background: var(--card);
-    border-radius: 12px;
-    box-shadow: var(--shadow-md);
     overflow: hidden;
+    background: var(--surface);
+    border: 1px solid var(--separator);
+    border-radius: var(--radius-lg);
 }
 
-/* =============================================
-   Workflow Table Styles
-   ============================================= */
+.workflow-highlight-pill {
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 12px;
+    background: var(--info-bg);
+    color: var(--info-fg);
+    font-size: 12px;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+}
 
 .workflow-table {
     width: 100%;
+    min-width: 860px;
     border-collapse: collapse;
-    font-size: 0.85rem;
-    min-width: 800px;
 }
 
-.workflow-table thead {
-    background: var(--muted);
-}
-
-.workflow-table th {
-    padding: 10px 12px;
-    text-align: center;
-    font-weight: 700;
-    font-size: 0.75rem;
+.workflow-table thead th {
+    padding: 8px 12px;
+    background: transparent;
+    color: var(--fg-tertiary);
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.6px;
-    color: var(--muted-foreground);
-    border-bottom: 2px solid var(--border);
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--separator);
     white-space: nowrap;
 }
 
-.workflow-table th.col-window {
-    text-align: left;
-    padding-left: 20px;
-    width: 140px;
+.workflow-table tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--separator);
+    vertical-align: middle;
+    font-size: 13px;
 }
 
-.workflow-table th.col-counts,
-.workflow-table th.col-rates {
-    color: var(--muted-foreground);
-    font-size: 0.7rem;
-    border-bottom: 1px solid var(--border);
-}
-
-.workflow-table th.col-data {
-    min-width: 85px;
-}
-
-.workflow-table tbody tr {
-    border-bottom: 1px solid var(--border);
-    transition: background 0.15s ease;
-}
-
-.workflow-table tbody tr:last-child {
+.workflow-table tbody tr:last-child td {
     border-bottom: none;
 }
 
-.workflow-table tbody tr:hover {
-    background: var(--accent);
+.workflow-table tbody tr:hover td {
+    background: var(--surface-secondary);
 }
 
-.workflow-table td {
-    padding: 12px;
-    text-align: center;
-    vertical-align: middle;
-}
-
-/* Time Window Cell */
-
-.cell-window {
-    text-align: left;
-    padding-left: 20px !important;
-    white-space: nowrap;
-}
-
-.window-label {
-    font-weight: 600;
-    color: var(--foreground);
+.workflow-window-cell strong {
     display: block;
-    font-size: 0.85rem;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg);
+    letter-spacing: -0.01em;
 }
 
-.window-seconds {
-    font-size: 0.7rem;
-    color: var(--muted-foreground);
+.workflow-window-cell span {
+    display: block;
+    margin-top: 2px;
+    color: var(--fg-tertiary);
+    font-size: 11px;
 }
 
-/* Data Cells */
-
-.cell-data {
-    vertical-align: middle;
+.workflow-cell-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-start;
 }
 
-.cell-rate {
-    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
-    font-size: 0.8rem;
-    color: var(--muted-foreground);
+.workflow-rate-value {
+    color: var(--fg-tertiary);
+    font-size: 11px;
+    font-family: "SF Mono", "Menlo", "Monaco", monospace;
 }
 
-/* Responsive */
-
-@media (max-width: 768px) {
-    .section-header {
-        padding: 14px 16px;
-    }
-
-    .workflow-table {
-        font-size: 0.8rem;
-    }
-
-    .workflow-table th,
-    .workflow-table td {
-        padding: 8px 8px;
-    }
-
-    .cell-window {
-        padding-left: 12px !important;
-    }
+.workflow-p100-cell {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg);
+    font-family: "SF Mono", "Menlo", "Monaco", monospace;
 }

@@ -4,7 +4,7 @@ import TasklistLatency from "../components/TasklistLatency";
 
 function DashboardPage({ data, tasklistWindow }) {
   return (
-    <>
+    <div className="dashboard-page">
       <SummaryCards
         rates30min={data.rates_30min}
         rates1hr={data.rates_1hr}
@@ -18,7 +18,7 @@ function DashboardPage({ data, tasklistWindow }) {
         tasklists={data.tasklist_latency}
         tasklistWindow={tasklistWindow}
       />
-    </>
+    </div>
   );
 }
 

@@ -1,48 +1,49 @@
 .ts-container {
     position: relative;
-    display: inline-block;
 }
 
 .ts-trigger {
     display: flex;
     align-items: center;
-    gap: 8px;
-    background: rgba(255, 255, 255, 0.1);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    border-radius: 8px;
-    padding: 6px 14px;
-    color: #fff;
-    font-size: 0.85rem;
+    gap: 6px;
+    height: var(--control-height-lg);
+    min-width: 160px;
+    max-width: 220px;
+    padding: 0 10px 0 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg);
+    font-size: 13px;
     font-weight: 500;
     cursor: pointer;
-    transition:
-        background 0.15s ease,
-        border-color 0.15s ease;
-    white-space: nowrap;
-    font-family: inherit;
-    line-height: 1.4;
+    transition: background 0.12s ease, border-color 0.12s ease;
 }
 
 .ts-trigger:hover {
-    background: rgba(255, 255, 255, 0.18);
-    border-color: rgba(255, 255, 255, 0.3);
+    background: var(--surface-secondary);
 }
 
 .ts-trigger:focus-visible {
-    outline: 2px solid var(--primary);
-    outline-offset: 2px;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-bg);
+    outline: none;
 }
 
 .ts-name {
-    max-width: 160px;
+    flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
 }
 
 .ts-arrow {
-    font-size: 0.7rem;
-    opacity: 0.7;
-    transition: transform 0.2s ease;
+    flex-shrink: 0;
+    color: var(--fg-tertiary);
+    font-size: 10px;
+    transition: transform 0.15s ease;
     line-height: 1;
 }
 
@@ -52,48 +53,53 @@
 
 .ts-dropdown {
     position: absolute;
-    top: calc(100% + 6px);
+    top: calc(100% + 4px);
     right: 0;
     min-width: 200px;
-    background: var(--card);
-    border-radius: 10px;
-    box-shadow: var(--shadow-lg);
     list-style: none;
-    padding: 6px 0;
+    padding: 4px;
     margin: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-dropdown);
     z-index: 200;
-    overflow: hidden;
 }
 
 .ts-item {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 16px;
+    height: 32px;
+    padding: 0 10px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    font-size: 0.85rem;
-    color: var(--foreground);
-    transition: background 0.12s ease;
+    color: var(--fg);
+    font-size: 13px;
+    transition: background 0.1s ease;
 }
 
 .ts-item:hover {
-    background: var(--accent);
+    background: var(--surface-secondary);
 }
 
 .ts-item--active {
-    font-weight: 600;
-    color: var(--primary);
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-weight: 500;
+}
+
+.ts-item--active:hover {
+    background: var(--accent-bg);
 }
 
 .ts-item--empty {
+    color: var(--fg-tertiary);
     cursor: default;
-    color: var(--muted-foreground);
-    font-style: italic;
+    font-size: 12px;
 }
 
 .ts-item-check {
-    color: var(--primary);
-    font-size: 0.85rem;
-    margin-left: 12px;
-    font-weight: 700;
+    font-size: 11px;
+    color: var(--accent);
 }

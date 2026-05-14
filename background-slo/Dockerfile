@@ -33,6 +33,8 @@ RUN npm ci
 
 # Copy the rest of the frontend source and build
 COPY frontend/ .
+ARG VITE_GOOGLE_CLIENT_ID
+ENV VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
 RUN npm run build
 
 # =============================================================================

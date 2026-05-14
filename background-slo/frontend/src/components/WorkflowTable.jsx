@@ -10,17 +10,10 @@ function getStatusBadge(status) {
   return "badge-default";
 }
 
-function formatStatusLabel(key) {
-  if (key === "timed_out") return "Timed Out";
-  if (key === "cont_as_new") return "ContAsNew";
-  return key.charAt(0).toUpperCase() + key.slice(1);
-}
-
 function WorkflowTable({ windows }) {
   if (!windows || windows.length === 0) return null;
 
   const columns = [
-    { key: "label", label: "Time Window" },
     { key: "started", label: "Started", badge: "started" },
     { key: "completed", label: "Completed", badge: "completed" },
     { key: "failed", label: "Failed", badge: "failed" },
@@ -29,72 +22,71 @@ function WorkflowTable({ windows }) {
     { key: "open", label: "Open", badge: "open" },
   ];
 
-  const rateKeys = [
-    { key: "started_rate", label: "Started" },
-    { key: "completed_rate", label: "Completed" },
-    { key: "failed_rate", label: "Failed" },
-    { key: "timed_out_rate", label: "Timed Out" },
-    { key: "cancelled_rate", label: "Cancelled" },
-    { key: "open_rate", label: "Open" },
-  ];
+  const bestWindow = [...windows].sort(
+    (left, right) => right.completed_rate - left.completed_rate,
+  )[0];
 
   return (
-    <div className="workflow-section">
+    <section className="workflow-section card">
       <div className="section-header">
-        <h2 className="section-title">Workflow Rates by Time Window</h2>
-        <span className="section-subtitle">Counts and rates per window</span>
+        <div>
+          <h2 className="section-title">Workflow Rates by Time Window</h2>
+          <p className="section-subtitle">
+            Compare absolute counts with rate changes to see where load and
+            failures are diverging.
+          </p>
+        </div>
+        {bestWindow && (
+          <div className="workflow-highlight-pill">
+            Strongest completion rate: {bestWindow.label} ({bestWindow.completed_rate})
+          </div>
+        )}
       </div>
+
       <div className="table-container">
         <table className="workflow-table">
           <thead>
             <tr>
-              <th className="col-window">Time Window</th>
-              <th className="col-counts" colSpan={6}>
-                Counts
-              </th>
-              <th className="col-rates" colSpan={6}>
-                Rates
-              </th>
-            </tr>
-            <tr>
-              <th></th>
-              {columns.slice(1).map((col) => (
-                <th key={col.key} className="col-data">
-                  {col.label}
-                </th>
-              ))}
-              {rateKeys.map((rk) => (
-                <th key={rk.key} className="col-data">
-                  {rk.label}
-                </th>
-              ))}
+              <th>Window</th>
+              <th>Started</th>
+              <th>Completed</th>
+              <th>Failed</th>
+              <th>Timed Out</th>
+              <th>Cancelled</th>
+              <th>Open</th>
+              <th>P100</th>
             </tr>
           </thead>
           <tbody>
-            {windows.map((win, idx) => (
-              <tr key={idx}>
-                <td className="cell-window">
-                  <span className="window-label">{win.label}</span>
-                  <span className="window-seconds">{win.seconds}s</span>
+            {windows.map((window) => (
+              <tr key={window.label}>
+                <td className="workflow-window-cell">
+                  <strong>{window.label}</strong>
+                  <span>{window.seconds.toLocaleString()} seconds</span>
                 </td>
-                {columns.slice(1).map((col) => (
-                  <td key={col.key} className="cell-data">
-                    <span className={`badge ${getStatusBadge(col.badge)}`}>
-                      {win[col.key] ?? "-"}
-                    </span>
+                {columns.map((column) => (
+                  <td key={column.key}>
+                    <div className="workflow-cell-stack">
+                      <span className={`badge ${getStatusBadge(column.badge)}`}>
+                        {(window[column.key] ?? 0).toLocaleString()}
+                      </span>
+                      <span className="workflow-rate-value">
+                        {window[`${column.key}_rate`] ?? "-"}
+                      </span>
+                    </div>
                   </td>
                 ))}
-                {rateKeys.map((rk) => (
-                  <td key={rk.key} className="cell-rate">
-                    {win[rk.key] ?? "-"}
-                  </td>
-                ))}
+                <td className="workflow-p100-cell">
+                  {window.p100_latency_ms
+                    ? `${(window.p100_latency_ms / 1000).toFixed(1)}s`
+                    : "-"}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-    </div>
+    </section>
   );
 }
 

@@ -12,3 +12,4 @@ data:
   DEFAULT_DOMAIN_NAME: {{ .Values.configmap.DEFAULT_DOMAIN_NAME | default "unknown" | quote }}
   DEFAULT_ES: {{ .Values.configmap.DEFAULT_ES | default "http://localhost:9000" | quote }}
   DEFAULT_INDEX: {{ .Values.configmap.DEFAULT_INDEX | default "cadence-visibility" | quote }}
+  GOOGLE_CLIENT_ID: {{ .Values.configmap.GOOGLE_CLIENT_ID | default "" | quote }}

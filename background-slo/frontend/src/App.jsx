@@ -1,60 +1,87 @@
 import { useState, useEffect, useCallback } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
-import SummaryCards from "./components/SummaryCards";
-import WorkflowTable from "./components/WorkflowTable";
-import TasklistLatency from "./components/TasklistLatency";
-import RecentFailures from "./components/RecentFailures";
-import ActivityErrors from "./components/ActivityErrors";
-import P100LatencyByWorkflow from "./components/P100LatencyByWorkflow";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { useAuth } from "./auth/AuthContext";
 import Sidebar from "./components/Sidebar";
 import TenantSelector from "./components/TenantSelector";
 import DashboardPage from "./pages/DashboardPage";
 import RecentFailuresPage from "./pages/RecentFailuresPage";
 import ActivityErrorsPage from "./pages/ActivityErrorsPage";
 import P100LatencyPage from "./pages/P100LatencyPage";
+import LoginPage from "./pages/LoginPage";
 
 import "./App.css";
 
 const LS_KEY = "slo_dashboard_tenant_id";
 
+const PAGE_META = {
+  "/": {
+    eyebrow: "Pages / Overview",
+    title: "Background SLO Dashboard",
+    description:
+      "Track workflow health, latency, and operational drift across tenants in one view.",
+  },
+  "/recent-failures": {
+    eyebrow: "Pages / Workflows",
+    title: "Recent Failures",
+    description:
+      "Inspect failed and timed out executions with pagination and tasklist filters.",
+  },
+  "/activity-errors": {
+    eyebrow: "Pages / Diagnostics",
+    title: "Activity Errors",
+    description:
+      "Review activity failure patterns and raw error details without leaving the dashboard.",
+  },
+  "/p100-latency": {
+    eyebrow: "Pages / Performance",
+    title: "P100 Latency",
+    description:
+      "Compare worst-case latency by workflow window to spot slow paths quickly.",
+  },
+};
+
 function App() {
+  const { user, checking, signOut, authFetch } = useAuth();
+  const location = useLocation();
+  const pageMeta = PAGE_META[location.pathname] ?? PAGE_META["/"];
+
+  // Show a blank screen while validating a stored token
+  if (checking) return null;
+
+  // Not signed in → login page
+  if (!user) return <LoginPage />;
+
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
 
-  // Tenant state
   const [tenants, setTenants] = useState([]);
   const [selectedTenantId, setSelectedTenantId] = useState(() => {
     const saved = localStorage.getItem(LS_KEY);
     return saved ? Number(saved) : null;
   });
 
-  // Limit state for recent failures
   const [limit, setLimit] = useState(() => {
     const saved = localStorage.getItem("slo_dashboard_limit");
     return saved ? Number(saved) : 20;
   });
 
-  // Tasklist window state (in seconds)
   const [tasklistWindow, setTasklistWindow] = useState(() => {
     const saved = localStorage.getItem("slo_dashboard_tasklist_window");
     return saved ? Number(saved) : 3600;
   });
 
-  // Status filter state for recent failures
   const [statusFilter, setStatusFilter] = useState(() => {
     const saved = localStorage.getItem("slo_dashboard_status_filter");
     return saved ? saved.split(",") : ["Failed", "TimedOut"];
   });
 
-  // Status filter state for activity errors (empty = all)
   const [activityStatusFilter, setActivityStatusFilter] = useState(() => {
     const saved = localStorage.getItem("slo_dashboard_activity_status_filter");
     return saved ? saved.split(",") : [];
   });
 
-  // Activity error detail field name (ES field for actual error messages)
   const [activityErrorDetailField, setActivityErrorDetailField] = useState(
     () => {
       const saved = localStorage.getItem(
@@ -64,38 +91,42 @@ function App() {
     },
   );
 
-  // Tasklist filter state for recent failures
   const [tasklistFilter, setTasklistFilter] = useState(() => {
     const saved = localStorage.getItem("slo_dashboard_tasklist_filter");
     return saved ? saved.split(",") : [];
   });
 
-  // Derive unique available tasklists from response data
   const [availableTasklists, setAvailableTasklists] = useState([]);
 
-  // Date/time range state for recent failures (Unix timestamps in seconds)
   const [startTime, setStartTime] = useState(() => {
     const saved = localStorage.getItem("slo_dashboard_start_time");
-    return saved ? Number(saved) : null; // null = no filter
+    return saved ? Number(saved) : null;
   });
   const [endTime, setEndTime] = useState(() => {
     const saved = localStorage.getItem("slo_dashboard_end_time");
-    return saved ? Number(saved) : null; // null = no filter
+    return saved ? Number(saved) : null;
   });
 
-  // Pagination state for recent failures
   const [offset, setOffset] = useState(0);
-
-  // Total failed count from API response
   const [totalFailed, setTotalFailed] = useState(0);
-
-  // Theme state
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem("slo_dashboard_theme");
     return saved || "light";
   });
 
-  // Apply theme to document
+  const [autoRefresh, setAutoRefresh] = useState(() => {
+    const saved = localStorage.getItem("slo_dashboard_auto_refresh");
+    return saved === null ? true : saved === "true";
+  });
+
+  const toggleAutoRefresh = () => {
+    setAutoRefresh((prev) => {
+      const next = !prev;
+      localStorage.setItem("slo_dashboard_auto_refresh", String(next));
+      return next;
+    });
+  };
+
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("slo_dashboard_theme", theme);
@@ -105,10 +136,9 @@ function App() {
     setTheme((prev) => (prev === "light" ? "dark" : "light"));
   };
 
-  // Fetch tenants list
   const fetchTenants = useCallback(async () => {
     try {
-      const res = await fetch("/api/tenants");
+      const res = await authFetch("/api/tenants");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const list = await res.json();
       setTenants(list);
@@ -117,17 +147,15 @@ function App() {
       console.error("Failed to load tenants:", err);
       return [];
     }
-  }, []);
+  }, [authFetch]);
 
-  // Load tenants on mount and set default
   useEffect(() => {
     fetchTenants().then((list) => {
       if (list.length > 0) {
         const saved = localStorage.getItem(LS_KEY);
         const savedId = saved ? Number(saved) : null;
-        const exists = list.some((t) => t.id === savedId);
+        const exists = list.some((tenant) => tenant.id === savedId);
         if (!exists) {
-          // Default to first tenant
           setSelectedTenantId(list[0].id);
           localStorage.setItem(LS_KEY, String(list[0].id));
         }
@@ -135,7 +163,6 @@ function App() {
     });
   }, [fetchTenants]);
 
-  // Build the query string for fetching workflow data
   const buildQueryString = useCallback(() => {
     const params = new URLSearchParams();
     params.set("tenant_id", selectedTenantId);
@@ -176,37 +203,37 @@ function App() {
     activityErrorDetailField,
   ]);
 
-  // Fetch workflow data for the selected tenant
   const fetchData = useCallback(async () => {
     if (!selectedTenantId) return;
+
     try {
       setLoading(true);
       const qs = buildQueryString();
-      const response = await fetch(`/api/workflows?${qs}`);
+      const response = await authFetch(`/api/workflows?${qs}`);
       if (!response.ok) {
         throw new Error(`HTTP error: ${response.status}`);
       }
+
       const json = await response.json();
       setData(json);
       setLastUpdated(new Date().toLocaleTimeString());
       setError(null);
 
-      // Extract unique tasklists from the response
       const tasklistSet = new Set();
       if (json.tasklist_latency) {
-        json.tasklist_latency.forEach((t) => {
-          if (t.tasklist) tasklistSet.add(t.tasklist);
+        json.tasklist_latency.forEach((tasklist) => {
+          if (tasklist.tasklist) tasklistSet.add(tasklist.tasklist);
         });
       }
       if (json.recent_failed) {
-        json.recent_failed.forEach((f) => {
-          if (f.tasklist) tasklistSet.add(f.tasklist);
+        json.recent_failed.forEach((failure) => {
+          if (failure.tasklist) tasklistSet.add(failure.tasklist);
         });
       }
-      // Always include selected tasklists so they don't disappear from the dropdown
       if (tasklistFilter.length > 0) {
-        tasklistFilter.forEach((tl) => tasklistSet.add(tl));
+        tasklistFilter.forEach((tasklist) => tasklistSet.add(tasklist));
       }
+
       setAvailableTasklists(Array.from(tasklistSet).sort());
       setTotalFailed(json.total_failed || 0);
     } catch (err) {
@@ -214,47 +241,40 @@ function App() {
     } finally {
       setLoading(false);
     }
-  }, [buildQueryString]);
+  }, [authFetch, buildQueryString, selectedTenantId, tasklistFilter]);
 
-  // Fetch on mount and when tenant or limit changes
   useEffect(() => {
     if (selectedTenantId) {
       fetchData();
     }
   }, [fetchData, selectedTenantId]);
 
-  // Poll every 10s
   useEffect(() => {
-    if (!selectedTenantId) return;
+    if (!selectedTenantId || !autoRefresh) return;
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
-  }, [fetchData, selectedTenantId]);
+  }, [fetchData, selectedTenantId, autoRefresh]);
 
-  // Handle tenant selection
   const handleTenantSelect = (id) => {
     setSelectedTenantId(id);
     localStorage.setItem(LS_KEY, String(id));
   };
 
-  // Handle limit change
   const handleLimitChange = (newLimit) => {
     setLimit(newLimit);
     localStorage.setItem("slo_dashboard_limit", String(newLimit));
   };
 
-  // Handle tasklist window change
   const handleTasklistWindowChange = (newWindow) => {
     setTasklistWindow(newWindow);
     localStorage.setItem("slo_dashboard_tasklist_window", String(newWindow));
   };
 
-  // Handle status filter change
   const handleStatusFilterChange = (newFilter) => {
     setStatusFilter(newFilter);
     localStorage.setItem("slo_dashboard_status_filter", newFilter.join(","));
   };
 
-  // Handle activity status filter change
   const handleActivityStatusFilterChange = (newFilter) => {
     setActivityStatusFilter(newFilter);
     localStorage.setItem(
@@ -263,56 +283,51 @@ function App() {
     );
   };
 
-  // Handle activity error detail field change
   const handleActivityErrorDetailFieldChange = (newField) => {
     setActivityErrorDetailField(newField);
     localStorage.setItem("slo_dashboard_activity_error_detail_field", newField);
   };
 
-  // Handle tasklist filter change
   const handleTasklistFilterChange = (newFilter) => {
     setTasklistFilter(newFilter);
     localStorage.setItem("slo_dashboard_tasklist_filter", newFilter.join(","));
   };
 
-  // Handle start time change
   const handleStartTimeChange = (newTime) => {
     setStartTime(newTime);
-    setOffset(0); // Reset pagination when filter changes
+    setOffset(0);
     localStorage.setItem(
       "slo_dashboard_start_time",
       newTime ? String(newTime) : "",
     );
   };
 
-  // Handle end time change
   const handleEndTimeChange = (newTime) => {
     setEndTime(newTime);
-    setOffset(0); // Reset pagination when filter changes
+    setOffset(0);
     localStorage.setItem(
       "slo_dashboard_end_time",
       newTime ? String(newTime) : "",
     );
   };
 
-  // Handle offset change (pagination)
   const handleOffsetChange = (newOffset) => {
     setOffset(newOffset);
   };
 
-  // Convert Unix timestamp (seconds) to datetime-local string value
   const tsToDt = (ts) => {
     if (!ts) return "";
-    const d = new Date(ts * 1000);
-    const pad = (n) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const date = new Date(ts * 1000);
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
+      date.getDate(),
+    )}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
   };
 
-  // Convert datetime-local string value to Unix timestamp (seconds)
   const dtToTs = (dt) => {
     if (!dt) return null;
-    const d = new Date(dt);
-    return Math.floor(d.getTime() / 1000);
+    const date = new Date(dt);
+    return Math.floor(date.getTime() / 1000);
   };
 
   const WINDOW_OPTIONS = [
@@ -329,90 +344,147 @@ function App() {
   };
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <div className="header-left">
-          <h1 className="header-title">
-            <img
-              className="header-logo"
-              src="https://cdn.appointy.com/master/images/branding/icon.png"
-              alt="Appointy"
-            />
-            Background SLO Dashboard
-          </h1>
-          {data && data.domain_name && (
-            <span className="header-domain">{data.domain_name}</span>
-          )}
-        </div>
-        <div className="header-right">
-          <button
-            className="theme-toggle"
-            onClick={toggleTheme}
-            title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
-          >
-            {theme === "light" ? "\u263D" : "\u2600"}
-          </button>
-          <TenantSelector
-            tenants={tenants}
-            selectedTenantId={selectedTenantId}
-            onSelect={handleTenantSelect}
-          />
-          {loading && <span className="loading-indicator">Refreshing...</span>}
-          {lastUpdated && (
-            <span className="last-updated">Last updated: {lastUpdated}</span>
-          )}
-        </div>
-      </header>
+    <div className="app-shell">
+      <Sidebar domainName={data?.domain_name} />
 
-      {error && (
-        <div className="error-banner">
-          <span className="error-icon">&#9888;</span>
-          Connection error: {error}. Retrying every 5s...
-        </div>
-      )}
+      <div className="app-stage">
+        <header className="app-topbar">
+          <div className="topbar-row topbar-row-title">
+            <h1 className="topbar-title">{pageMeta.title}</h1>
 
-      <div className="app-toolbar">
-        <div className="toolbar-group">
-          <span className="toolbar-label">Window:</span>
-          <select
-            className="toolbar-select"
-            value={tasklistWindow}
-            onChange={(e) => handleTasklistWindowChange(Number(e.target.value))}
-          >
-            {WINDOW_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="toolbar-group">
-          <span className="toolbar-label">From:</span>
-          <input
-            type="datetime-local"
-            className="toolbar-datetime"
-            value={tsToDt(startTime)}
-            onChange={(e) => handleStartTimeChange(dtToTs(e.target.value))}
-          />
-          <span className="toolbar-label">To:</span>
-          <input
-            type="datetime-local"
-            className="toolbar-datetime"
-            value={tsToDt(endTime)}
-            onChange={(e) => handleEndTimeChange(dtToTs(e.target.value))}
-          />
-          {(startTime || endTime) && (
-            <button className="toolbar-clear-btn" onClick={clearDates}>
-              Clear Dates
-            </button>
-          )}
-        </div>
-      </div>
+            <div className="topbar-actions">
+              {data?.domain_name && (
+                <div className="meta-pill meta-pill-domain">{data.domain_name}</div>
+              )}
+              {loading ? (
+                <div className="meta-pill meta-pill-live">
+                  <span className="spinner-tiny" />
+                  Refreshing
+                </div>
+              ) : lastUpdated ? (
+                <div className="meta-pill">Updated {lastUpdated}</div>
+              ) : null}
 
-      <main className="app-main">
-        {data && (
-          <div className="app-layout">
-            <Sidebar />
+              <button
+                className={`topbar-auto-refresh-btn${autoRefresh ? " active" : ""}`}
+                onClick={toggleAutoRefresh}
+                title={autoRefresh ? "Auto-refresh on — click to pause" : "Auto-refresh paused — click to enable"}
+              >
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+                  <path d="M11.5 6.5A5 5 0 112.5 3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                  <polyline points="9,1 11.5,3.5 9,6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                {autoRefresh ? "Auto" : "Paused"}
+              </button>
+              <button className="topbar-primary-btn" onClick={fetchData}>
+                Refresh
+              </button>
+              <button
+                className="theme-toggle"
+                onClick={toggleTheme}
+                title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+                aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+              >
+                {theme === "light" ? (
+                  <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+                    <circle cx="7.5" cy="7.5" r="3" stroke="currentColor" strokeWidth="1.3"/>
+                    <line x1="7.5" y1="1" x2="7.5" y2="2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                    <line x1="7.5" y1="12.5" x2="7.5" y2="14" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                    <line x1="1" y1="7.5" x2="2.5" y2="7.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                    <line x1="12.5" y1="7.5" x2="14" y2="7.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                    <line x1="3.05" y1="3.05" x2="4.11" y2="4.11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                    <line x1="10.89" y1="10.89" x2="11.95" y2="11.95" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                    <line x1="11.95" y1="3.05" x2="10.89" y2="4.11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                    <line x1="4.11" y1="10.89" x2="3.05" y2="11.95" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                  </svg>
+                ) : (
+                  <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+                    <path d="M12.5 9.5A6 6 0 015.5 2.5a6 6 0 100 10 6 6 0 007-3z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                )}
+              </button>
+              <TenantSelector
+                tenants={tenants}
+                selectedTenantId={selectedTenantId}
+                onSelect={handleTenantSelect}
+              />
+
+              <div className="topbar-user">
+                {user.picture ? (
+                  <img
+                    src={user.picture}
+                    alt={user.name ?? user.email}
+                    className="topbar-avatar"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <div className="topbar-avatar topbar-avatar-initials">
+                    {(user.name ?? user.email ?? "?")[0].toUpperCase()}
+                  </div>
+                )}
+                <button className="topbar-signout-btn" onClick={signOut} title="Sign out">
+                  <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true">
+                    <path d="M5 2H2a1 1 0 00-1 1v7a1 1 0 001 1h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                    <polyline points="9,9 12,6.5 9,4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                    <line x1="12" y1="6.5" x2="5" y2="6.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="topbar-row topbar-row-controls">
+            <div className="toolbar-group">
+              <span className="toolbar-label">Window</span>
+              <select
+                className="toolbar-select"
+                value={tasklistWindow}
+                onChange={(e) => handleTasklistWindowChange(Number(e.target.value))}
+              >
+                {WINDOW_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="topbar-separator" />
+
+            <div className="toolbar-group">
+              <span className="toolbar-label">From</span>
+              <input
+                type="datetime-local"
+                className="toolbar-datetime"
+                value={tsToDt(startTime)}
+                onChange={(e) => handleStartTimeChange(dtToTs(e.target.value))}
+              />
+              <span className="toolbar-label">To</span>
+              <input
+                type="datetime-local"
+                className="toolbar-datetime"
+                value={tsToDt(endTime)}
+                onChange={(e) => handleEndTimeChange(dtToTs(e.target.value))}
+              />
+              {(startTime || endTime) && (
+                <button className="toolbar-clear-btn" onClick={clearDates}>
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+        </header>
+
+        {error && (
+          <div className="error-banner">
+            <span className="error-icon">!</span>
+            <span>Connection error: {error}. Auto-refresh will continue.</span>
+          </div>
+        )}
+
+        <main className="app-main">
+
+          {data && (
             <div className="app-content">
               <Routes>
                 <Route
@@ -465,20 +537,22 @@ function App() {
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </div>
-          </div>
-        )}
-        {!data && !error && selectedTenantId && (
-          <div className="initial-loading">
-            <div className="spinner"></div>
-            <p>Loading dashboard data...</p>
-          </div>
-        )}
-        {!selectedTenantId && !error && (
-          <div className="initial-loading">
-            <p>No tenants configured. Add tenants via the API.</p>
-          </div>
-        )}
-      </main>
+          )}
+
+          {!data && !error && selectedTenantId && (
+            <div className="initial-loading card-surface">
+              <div className="spinner"></div>
+              <p>Loading dashboard data...</p>
+            </div>
+          )}
+
+          {!selectedTenantId && !error && (
+            <div className="initial-loading card-surface">
+              <p>No tenants configured. Add tenants via the API.</p>
+            </div>
+          )}
+        </main>
+      </div>
     </div>
   );
 }

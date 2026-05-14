@@ -1,26 +1,60 @@
 import "./SummaryCards.css";
 
-// Map card titles to window labels in the windows array
 const CARD_WINDOW_MAP = {
-  "Last 30 Minutes": "Last 30min",
-  "Last 1 Hour": "Last 1hr",
-  "Last 24 Hours": "Last 1d",
-  "Last 7 Days": "Last 7d",
-  "Last 30 Days": "Last 30d",
+  "30m": "Last 30min",
+  "1h": "Last 1hr",
+  "24h": "Last 1d",
+  "7d": "Last 7d",
+  "30d": "Last 30d",
 };
 
 function formatLatency(ms) {
-  if (!ms || ms === 0) return null;
+  if (!ms) return "—";
   if (ms < 1000) return `${ms.toLocaleString()} ms`;
   return `${(ms / 1000).toFixed(1)} s`;
 }
 
-function findP100Latency(windows, cardTitle) {
-  if (!windows || windows.length === 0) return null;
-  const targetLabel = CARD_WINDOW_MAP[cardTitle];
-  if (!targetLabel) return null;
-  const match = windows.find((w) => w.label === targetLabel);
-  return match ? match.p100_latency_ms : null;
+function getWindowLatency(windows, shortLabel) {
+  const targetLabel = CARD_WINDOW_MAP[shortLabel];
+  const match = windows?.find((w) => w.label === targetLabel);
+  return match?.p100_latency_ms ?? null;
+}
+
+function RingGauge({ pct }) {
+  const radius = 32;
+  const circ = 2 * Math.PI * radius;
+  const fill = circ * (pct / 100);
+  const ringClass =
+    pct >= 95 ? "" : pct >= 80 ? "ring-warning" : "ring-danger";
+
+  return (
+    <div className="summary-health-ring-wrap">
+      <svg
+        className="summary-health-ring-svg"
+        width="80"
+        height="80"
+        viewBox="0 0 80 80"
+      >
+        <circle
+          className="summary-health-ring-bg"
+          cx="40"
+          cy="40"
+          r={radius}
+        />
+        <circle
+          className={`summary-health-ring-fill ${ringClass}`}
+          cx="40"
+          cy="40"
+          r={radius}
+          strokeDasharray={`${fill} ${circ - fill}`}
+          strokeDashoffset="0"
+        />
+      </svg>
+      <div className="summary-health-ring-label">
+        <span className="summary-health-score">{pct}%</span>
+      </div>
+    </div>
+  );
 }
 
 function SummaryCards({
@@ -31,68 +65,112 @@ function SummaryCards({
   rates30d,
   windows,
 }) {
-  const cards = [
-    { title: "Last 30 Minutes", ...rates30min },
-    { title: "Last 1 Hour", ...rates1hr },
-    { title: "Last 24 Hours", ...rates1d },
-    { title: "Last 7 Days", ...rates7d },
-    { title: "Last 30 Days", ...rates30d },
+  const summaryCards = [
+    { label: "30m", title: "Last 30 min", data: rates30min },
+    { label: "1h", title: "Last 1 hour", data: rates1hr },
+    { label: "24h", title: "Last 24 hours", data: rates1d },
+    { label: "7d", title: "Last 7 days", data: rates7d },
+    { label: "30d", title: "Last 30 days", data: rates30d },
   ];
 
-  return (
-    <div className="summary-cards">
-      {cards.map((card, index) => {
-        const p100Ms = findP100Latency(windows, card.title);
-        const p100Formatted = formatLatency(p100Ms);
+  const heroData = rates1d || rates1hr || rates30min || rates7d || rates30d;
+  const healthScore = heroData?.success_pct ?? 0;
+  const attentionRate = heroData?.failure_pct ?? 0;
+  const totalVolume = heroData?.total ?? 0;
+  const successCount = heroData?.success ?? 0;
+  const failureCount = heroData?.failure ?? 0;
+  const p100 = formatLatency(getWindowLatency(windows, "24h"));
 
-        return (
-          <div className="summary-card" key={index}>
-            <div className="card-header">
-              <h3 className="card-title">{card.title}</h3>
-            </div>
-            <div className="card-body">
-              <div className="card-metric success-metric">
-                <div className="metric-value">{card.success_pct}%</div>
-                <div className="metric-label">Success</div>
-                <div className="metric-sub">
-                  {card.success.toLocaleString()} workflows
-                </div>
-              </div>
-              <div className="card-divider"></div>
-              <div className="card-metric failure-metric">
-                <div className="metric-value">{card.failure_pct}%</div>
-                <div className="metric-label">Failed / Timed Out</div>
-                <div className="metric-sub">
-                  {card.failure.toLocaleString()} workflows
-                </div>
-              </div>
-            </div>
-            <div className="card-footer">
-              <div className="card-footer-stats">
-                <span className="card-total">
-                  Total: {card.total.toLocaleString()}
-                </span>
-                {p100Formatted && (
-                  <span className="card-p100-latency">
-                    P100 Latency: {p100Formatted}
-                  </span>
-                )}
-              </div>
-              <div className="card-bar">
-                <div
-                  className="card-bar-success"
-                  style={{ width: `${card.success_pct}%` }}
-                ></div>
-                <div
-                  className="card-bar-failure"
-                  style={{ width: `${card.failure_pct}%` }}
-                ></div>
-              </div>
-            </div>
+  return (
+    <section className="summary-board">
+      <div className="summary-kpi-row">
+        <article className="summary-kpi-tile">
+          <p className="summary-kpi-tile-label">Successful (24h)</p>
+          <p className="summary-kpi-tile-value">{successCount.toLocaleString()}</p>
+          <span className="summary-kpi-tile-foot kpi-foot-success">
+            {healthScore}% healthy
+          </span>
+        </article>
+
+        <article className="summary-kpi-tile">
+          <p className="summary-kpi-tile-label">Failures (24h)</p>
+          <p className="summary-kpi-tile-value">{failureCount.toLocaleString()}</p>
+          <span className="summary-kpi-tile-foot kpi-foot-danger">
+            {attentionRate}% failed
+          </span>
+        </article>
+
+        <article className="summary-kpi-tile">
+          <p className="summary-kpi-tile-label">Total volume (24h)</p>
+          <p className="summary-kpi-tile-value">{totalVolume.toLocaleString()}</p>
+          <span className="summary-kpi-tile-foot">Workflows observed</span>
+        </article>
+
+        <article className="summary-kpi-tile">
+          <p className="summary-kpi-tile-label">P100 latency (24h)</p>
+          <p className="summary-kpi-tile-value">{p100}</p>
+          <span className="summary-kpi-tile-foot">Worst-case completion</span>
+        </article>
+      </div>
+
+      <div className="summary-health-panel">
+        <RingGauge pct={healthScore} />
+        <div className="summary-health-meta">
+          <p className="summary-health-title">Overall health — {healthScore}% success rate</p>
+          <p className="summary-health-desc">
+            Based on the latest 24-hour window across all workflows. P100 latency
+            reflects the slowest observed completion path.
+          </p>
+        </div>
+        <div className="summary-health-legend">
+          <div className="summary-health-legend-item">
+            <span className="legend-dot legend-dot-success" />
+            Healthy execution rate
           </div>
-        );
-      })}
-    </div>
+          <div className="summary-health-legend-item">
+            <span className="legend-dot legend-dot-warning" />
+            Failure &amp; timeout share
+          </div>
+        </div>
+      </div>
+
+      <div className="summary-window-strip">
+        {summaryCards.map((card) => (
+          <article className="summary-window-card" key={card.label}>
+            <div className="summary-window-topline">
+              <span className="summary-window-badge">{card.label}</span>
+              <span className="summary-window-total">
+                {card.data.total.toLocaleString()}
+              </span>
+            </div>
+            <h3>{card.title}</h3>
+            <div className="summary-window-stats">
+              <div>
+                <span className="summary-window-stat-label">Success</span>
+                <strong>{card.data.success_pct}%</strong>
+              </div>
+              <div>
+                <span className="summary-window-stat-label">Failed</span>
+                <strong>{card.data.failure_pct}%</strong>
+              </div>
+            </div>
+            <div className="summary-window-bar">
+              <span
+                className="summary-window-bar-success"
+                style={{ width: `${card.data.success_pct}%` }}
+              />
+              <span
+                className="summary-window-bar-failure"
+                style={{ width: `${card.data.failure_pct}%` }}
+              />
+            </div>
+            <p className="summary-window-latency">
+              P100 {formatLatency(getWindowLatency(windows, card.label))}
+            </p>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 

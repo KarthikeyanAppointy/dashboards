@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -204,6 +207,167 @@ func EnsureTable(db *sql.DB) error {
 		return fmt.Errorf("create tenants table: %w", err)
 	}
 	return nil
+}
+
+// ============================================================
+// Auth
+// ============================================================
+
+// session holds the data for one authenticated browser session.
+type session struct {
+	Email   string
+	Name    string
+	Picture string
+	Expiry  time.Time
+}
+
+// sessions is the in-memory store: token → session.
+var sessions sync.Map
+
+// generateToken returns a 32-byte cryptographically-random URL-safe token.
+func generateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(b), nil
+}
+
+// googleTokenInfo mirrors the fields we care about from Google's tokeninfo endpoint.
+type googleTokenInfo struct {
+	Sub              string `json:"sub"`
+	Email            string `json:"email"`
+	EmailVerified    string `json:"email_verified"`
+	Name             string `json:"name"`
+	Picture          string `json:"picture"`
+	HD               string `json:"hd"` // hosted domain (set for Workspace accounts)
+	Aud              string `json:"aud"`
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+}
+
+// authVerifyHandler handles POST /api/auth/verify.
+// It validates the Google credential, enforces the @appointy.com domain,
+// and returns a session token.
+func authVerifyHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Credential string `json:"credential"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Credential == "" {
+		writeJSONError(w, "credential is required", http.StatusBadRequest)
+		return
+	}
+
+	// Verify the ID token with Google's tokeninfo endpoint.
+	resp, err := http.Get("https://oauth2.googleapis.com/tokeninfo?id_token=" + req.Credential)
+	if err != nil {
+		writeJSONError(w, "failed to reach Google tokeninfo", http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	var info googleTokenInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		writeJSONError(w, "failed to parse token info", http.StatusInternalServerError)
+		return
+	}
+	if info.Error != "" {
+		writeJSONError(w, "invalid Google token: "+info.Error, http.StatusUnauthorized)
+		return
+	}
+
+	// Optionally verify the audience matches our client ID.
+	if clientID := getEnv("GOOGLE_CLIENT_ID", ""); clientID != "" && info.Aud != clientID {
+		writeJSONError(w, "token audience mismatch", http.StatusUnauthorized)
+		return
+	}
+
+	// Enforce @appointy.com domain.
+	if !strings.HasSuffix(info.Email, "@appointy.com") && info.HD != "appointy.com" {
+		writeJSONError(w, "access restricted to @appointy.com accounts", http.StatusForbidden)
+		return
+	}
+
+	token, err := generateToken()
+	if err != nil {
+		writeJSONError(w, "failed to create session", http.StatusInternalServerError)
+		return
+	}
+
+	sessions.Store(token, session{
+		Email:   info.Email,
+		Name:    info.Name,
+		Picture: info.Picture,
+		Expiry:  time.Now().Add(24 * time.Hour),
+	})
+
+	writeJSON(w, map[string]string{
+		"token":   token,
+		"email":   info.Email,
+		"name":    info.Name,
+		"picture": info.Picture,
+	}, http.StatusOK)
+}
+
+// authMeHandler handles GET /api/auth/me — returns the current user or 401.
+func authMeHandler(w http.ResponseWriter, r *http.Request) {
+	token := extractBearerToken(r)
+	if token == "" {
+		writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	val, ok := sessions.Load(token)
+	if !ok {
+		writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	s := val.(session)
+	if time.Now().After(s.Expiry) {
+		sessions.Delete(token)
+		writeJSONError(w, "session expired", http.StatusUnauthorized)
+		return
+	}
+	writeJSON(w, map[string]string{
+		"email":   s.Email,
+		"name":    s.Name,
+		"picture": s.Picture,
+	}, http.StatusOK)
+}
+
+// extractBearerToken pulls the token out of "Authorization: Bearer <token>".
+func extractBearerToken(r *http.Request) string {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return ""
+	}
+	return strings.TrimPrefix(auth, "Bearer ")
+}
+
+// requireAuth wraps a handler and returns 401 if the request has no valid session.
+func requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := extractBearerToken(r)
+		if token == "" {
+			writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		val, ok := sessions.Load(token)
+		if !ok {
+			writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if s := val.(session); time.Now().After(s.Expiry) {
+			sessions.Delete(token)
+			writeJSONError(w, "session expired", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // ============================================================
@@ -1201,7 +1365,7 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization")
 		w.Header().Set("Access-Control-Max-Age", "86400")
 
 		if r.Method == http.MethodOptions {
@@ -1601,10 +1765,24 @@ func main() {
 	log.Printf("Starting Cadence Workflow Rate Dashboard backend (multi-tenant)")
 	log.Printf("  Port: %s", port)
 
-	// Register routes
-	http.HandleFunc("/api/workflows", corsMiddleware(workflowsHandler))
-	http.HandleFunc("/api/tenants", corsMiddleware(tenantsHandler))
-	http.HandleFunc("/api/tenants/delete", corsMiddleware(tenantDeleteHandler))
+	// Purge expired sessions every hour
+	go func() {
+		for range time.Tick(time.Hour) {
+			sessions.Range(func(k, v any) bool {
+				if s, ok := v.(session); ok && time.Now().After(s.Expiry) {
+					sessions.Delete(k)
+				}
+				return true
+			})
+		}
+	}()
+
+	// Register routes — auth endpoints are public; everything else requires a valid session
+	http.HandleFunc("/api/auth/verify", corsMiddleware(authVerifyHandler))
+	http.HandleFunc("/api/auth/me", corsMiddleware(authMeHandler))
+	http.HandleFunc("/api/workflows", corsMiddleware(requireAuth(workflowsHandler)))
+	http.HandleFunc("/api/tenants", corsMiddleware(requireAuth(tenantsHandler)))
+	http.HandleFunc("/api/tenants/delete", corsMiddleware(requireAuth(tenantDeleteHandler)))
 	http.HandleFunc("/health", corsMiddleware(healthHandler))
 
 	// Serve frontend static files (built by Vite)

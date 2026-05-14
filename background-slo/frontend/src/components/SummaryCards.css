@@ -1,155 +1,299 @@
-/* =============================================
-   Summary Cards
-   ============================================= */
-
-.summary-cards {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-    gap: 20px;
+.dashboard-page,
+.summary-board {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
 }
 
-/* Individual Card */
+/* ─── KPI Grid ───────────────────────────────────────────────── */
+.summary-kpi-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+}
 
-.summary-card {
-    background: var(--card);
-    border-radius: 12px;
-    box-shadow: var(--shadow-md);
-    overflow: hidden;
-    transition:
-        box-shadow 0.2s ease,
-        transform 0.2s ease;
+.summary-kpi-tile {
+    background: var(--surface);
+    border: 1px solid var(--separator);
+    border-radius: var(--radius-lg);
+    padding: 16px 18px;
+}
+
+.summary-kpi-tile-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--fg-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+}
+
+.summary-kpi-tile-value {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    line-height: 1;
+    color: var(--fg);
+}
+
+.summary-kpi-tile-foot {
+    display: inline-flex;
+    align-items: center;
+    margin-top: 8px;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--surface-secondary);
+    color: var(--fg-tertiary);
+}
+
+.kpi-foot-success {
+    background: var(--success-bg);
+    color: var(--success-fg);
+}
+
+.kpi-foot-danger {
+    background: var(--danger-bg);
+    color: var(--danger-fg);
+}
+
+/* ─── Health Panel ───────────────────────────────────────────── */
+.summary-health-panel {
+    background: var(--surface);
+    border: 1px solid var(--separator);
+    border-radius: var(--radius-lg);
+    padding: 18px;
     display: flex;
+    align-items: center;
+    gap: 24px;
+}
+
+.summary-health-ring-wrap {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    width: 80px;
+    height: 80px;
+}
+
+.summary-health-ring-svg {
+    transform: rotate(-90deg);
+}
+
+.summary-health-ring-bg {
+    fill: none;
+    stroke: var(--surface-secondary);
+    stroke-width: 7;
+}
+
+.summary-health-ring-fill {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 7;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.6s ease;
+}
+
+.summary-health-ring-fill.ring-danger {
+    stroke: var(--danger);
+}
+
+.summary-health-ring-fill.ring-warning {
+    stroke: var(--warning);
+}
+
+.summary-health-ring-label {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     flex-direction: column;
 }
 
-.summary-card:hover {
-    box-shadow: var(--shadow-lg);
-    transform: translateY(-2px);
+.summary-health-score {
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: var(--fg);
+    line-height: 1;
 }
 
-/* Card Header */
-
-.card-header {
-    padding: 14px 20px;
-    background: var(--muted);
-    border-bottom: 1px solid var(--border);
+.summary-health-meta {
+    flex: 1;
+    min-width: 0;
 }
 
-.card-title {
-    font-size: 0.85rem;
+.summary-health-title {
+    font-size: 14px;
     font-weight: 600;
-    color: var(--muted-foreground);
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
+    letter-spacing: -0.01em;
+    color: var(--fg);
+    margin-bottom: 4px;
 }
 
-/* Card Body */
+.summary-health-desc {
+    font-size: 12px;
+    color: var(--fg-secondary);
+    line-height: 1.5;
+}
 
-.card-body {
-    padding: 20px;
+.summary-health-legend {
     display: flex;
-    gap: 20px;
-    align-items: flex-start;
-    flex: 1;
+    flex-direction: column;
+    gap: 6px;
+    flex-shrink: 0;
 }
 
-.card-metric {
-    flex: 1;
-    text-align: center;
+.summary-health-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--fg-secondary);
 }
 
-.metric-value {
-    font-size: 2.2rem;
-    font-weight: 800;
-    line-height: 1.1;
-    letter-spacing: -1px;
+.legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
 }
 
-.metric-label {
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--muted-foreground);
-    margin-top: 4px;
+.legend-dot-success { background: var(--accent); }
+.legend-dot-warning { background: var(--warning); }
+
+/* ─── Window Strip ───────────────────────────────────────────── */
+.summary-window-strip {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 10px;
 }
 
-.metric-sub {
-    font-size: 0.8rem;
-    color: var(--muted-foreground);
-    margin-top: 2px;
+.summary-window-card {
+    background: var(--surface);
+    border: 1px solid var(--separator);
+    border-radius: var(--radius-lg);
+    padding: 14px 16px;
 }
 
-.success-metric .metric-value {
-    color: var(--success);
-}
-
-.failure-metric .metric-value {
-    color: var(--failure);
-}
-
-.card-divider {
-    width: 1px;
-    align-self: stretch;
-    background: var(--border);
-}
-
-/* Card Footer */
-
-.card-footer {
-    padding: 12px 20px;
-    background: var(--muted);
-    border-top: 1px solid var(--border);
-}
-
-.card-footer-stats {
+.summary-window-topline {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 8px;
     gap: 8px;
+    margin-bottom: 8px;
 }
 
-.card-total {
-    font-size: 0.8rem;
-    color: var(--muted-foreground);
+.summary-window-badge {
+    height: 20px;
+    padding: 0 8px;
+    border-radius: 10px;
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    display: inline-flex;
+    align-items: center;
+}
+
+.summary-window-total {
+    font-size: 11px;
+    color: var(--fg-tertiary);
+}
+
+.summary-window-card h3 {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--fg);
+    margin-bottom: 10px;
+}
+
+.summary-window-stats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.summary-window-stat-label {
+    display: block;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--fg-tertiary);
+    margin-bottom: 2px;
+}
+
+.summary-window-stats strong {
+    display: block;
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    color: var(--fg);
+}
+
+.summary-window-bar {
+    display: flex;
+    width: 100%;
+    height: 4px;
+    border-radius: 2px;
+    overflow: hidden;
+    background: var(--surface-secondary);
+    margin-bottom: 8px;
+}
+
+.summary-window-bar-success {
+    background: var(--success);
+    border-radius: 2px;
+}
+
+.summary-window-bar-failure {
+    background: var(--danger);
+    border-radius: 2px;
+}
+
+.summary-window-latency {
+    font-size: 11px;
+    color: var(--fg-tertiary);
     font-weight: 500;
 }
 
-.card-p100-latency {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--purple);
-    background: var(--purple-bg);
-    padding: 2px 10px;
-    border-radius: 10px;
-    white-space: nowrap;
+@media (max-width: 1100px) {
+    .summary-kpi-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .summary-window-strip {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .summary-health-legend {
+        display: none;
+    }
 }
 
-.card-bar {
-    height: 8px;
-    border-radius: 4px;
-    background: var(--border);
-    display: flex;
-    overflow: hidden;
-}
+@media (max-width: 768px) {
+    .summary-kpi-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 
-.card-bar-success {
-    background: linear-gradient(90deg, var(--success), #66bb6a);
-    transition: width 0.5s ease;
-    border-radius: 4px 0 0 4px;
-}
+    .summary-window-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 
-.card-bar-failure {
-    background: linear-gradient(90deg, var(--failure), #ef5350);
-    transition: width 0.5s ease;
-    border-radius: 0 4px 4px 0;
-}
-
-/* Responsive */
-
-@media (max-width: 600px) {
-    .summary-cards {
-        grid-template-columns: 1fr;
+    .summary-health-panel {
+        flex-direction: column;
+        align-items: flex-start;
     }
 }

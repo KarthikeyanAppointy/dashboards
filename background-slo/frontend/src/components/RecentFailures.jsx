@@ -1,3 +1,4 @@
+import { useState, useRef, useEffect } from "react";
 import "./RecentFailures.css";
 
 const STATUS_OPTIONS = ["Failed", "TimedOut"];
@@ -7,6 +8,113 @@ function getStatusClass(status) {
   if (status === "TimedOut" || status === "timed_out" || status === "Timed Out")
     return "status-timedout";
   return "status-default";
+}
+
+function TasklistDropdown({ availableTasklists, tasklistFilter, onTasklistFilterChange }) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const filtered = availableTasklists.filter((tl) =>
+    tl.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const toggle = (tl) => {
+    const next = tasklistFilter.includes(tl)
+      ? tasklistFilter.filter((t) => t !== tl)
+      : [...tasklistFilter, tl];
+    onTasklistFilterChange(next);
+  };
+
+  const selectedCount = tasklistFilter.length;
+  const label =
+    selectedCount === 0
+      ? "All tasklists"
+      : selectedCount === 1
+      ? tasklistFilter[0]
+      : `${selectedCount} tasklists`;
+
+  return (
+    <div className="tl-dropdown-container" ref={containerRef}>
+      <button
+        className={`tl-dropdown-trigger${open ? " open" : ""}${selectedCount > 0 ? " has-selection" : ""}`}
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <rect x="1" y="2" width="10" height="1.5" rx="0.75" fill="currentColor"/>
+          <rect x="1" y="5.25" width="7" height="1.5" rx="0.75" fill="currentColor"/>
+          <rect x="1" y="8.5" width="5" height="1.5" rx="0.75" fill="currentColor"/>
+        </svg>
+        <span className="tl-dropdown-label">{label}</span>
+        {selectedCount > 0 && (
+          <span className="tl-dropdown-count">{selectedCount}</span>
+        )}
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true" className={`tl-dropdown-chevron${open ? " open" : ""}`}>
+          <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </button>
+
+      {open && (
+        <div className="tl-dropdown-panel" role="listbox" aria-multiselectable="true">
+          {availableTasklists.length > 6 && (
+            <div className="tl-dropdown-search">
+              <input
+                type="text"
+                placeholder="Filter tasklists…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                autoFocus
+              />
+            </div>
+          )}
+
+          <div className="tl-dropdown-list">
+            {filtered.length === 0 ? (
+              <div className="tl-dropdown-empty">No matches</div>
+            ) : (
+              filtered.map((tl) => {
+                const checked = tasklistFilter.includes(tl);
+                return (
+                  <label key={tl} className={`tl-dropdown-item${checked ? " checked" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggle(tl)}
+                    />
+                    <span className="tl-dropdown-item-name">{tl}</span>
+                  </label>
+                );
+              })
+            )}
+          </div>
+
+          {selectedCount > 0 && (
+            <div className="tl-dropdown-footer">
+              <button
+                className="tl-dropdown-clear"
+                onClick={() => { onTasklistFilterChange([]); setOpen(false); }}
+              >
+                Clear selection
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function RecentFailures({
@@ -22,40 +130,27 @@ function RecentFailures({
   onOffsetChange,
   totalFailed,
 }) {
-  // Pagination calculations
   const pageSize = limit || 20;
   const currentPage = Math.floor(offset / pageSize) + 1;
   const totalPages = Math.ceil(totalFailed / pageSize);
   const hasPrevPage = offset > 0;
   const hasNextPage = offset + pageSize < totalFailed;
 
-  // Apply client-side filtering based on status and tasklist
   const filteredFailures = (failures || []).filter((f) => {
-    // Status filter: if both are selected (show all), or if the status matches
     const statusMatch =
       statusFilter.length === 0 ||
       statusFilter.length === 2 ||
       statusFilter.includes(f.status);
-    // Tasklist filter: if none selected (show all), or if the tasklist matches
     const tasklistMatch =
       tasklistFilter.length === 0 || tasklistFilter.includes(f.tasklist);
     return statusMatch && tasklistMatch;
   });
 
-  // Toggle a status in the filter
   const toggleStatus = (status) => {
     const newFilter = statusFilter.includes(status)
       ? statusFilter.filter((s) => s !== status)
       : [...statusFilter, status];
     onStatusFilterChange(newFilter);
-  };
-
-  // Toggle a tasklist in the filter
-  const toggleTasklist = (tasklist) => {
-    const newFilter = tasklistFilter.includes(tasklist)
-      ? tasklistFilter.filter((t) => t !== tasklist)
-      : [...tasklistFilter, tasklist];
-    onTasklistFilterChange(newFilter);
   };
 
   return (
@@ -65,7 +160,7 @@ function RecentFailures({
         <div className="section-header-right">
           {failures && failures.length > 0 && (
             <span className="failure-count">
-              {filteredFailures.length} of {failures.length} workflows
+              {filteredFailures.length} of {failures.length}
             </span>
           )}
           <label className="limit-selector">
@@ -81,43 +176,38 @@ function RecentFailures({
               <option value={500}>500</option>
             </select>
           </label>
-          {/* Pagination Controls - Top */}
           {totalFailed > 0 && (
             <div className="pagination-controls">
               <button
                 className="pagination-btn"
                 disabled={!hasPrevPage}
                 onClick={() => onOffsetChange(Math.max(0, offset - pageSize))}
-                title="Previous page"
               >
-                &larr; Prev
+                ← Prev
               </button>
               <span className="pagination-info">
-                {totalPages > 0 ? `${currentPage} of ${totalPages}` : "0 of 0"}
+                {totalPages > 0 ? `${currentPage} / ${totalPages}` : "0 / 0"}
               </span>
               <button
                 className="pagination-btn"
                 disabled={!hasNextPage}
                 onClick={() => onOffsetChange(offset + pageSize)}
-                title="Next page"
               >
-                Next &rarr;
+                Next →
               </button>
             </div>
           )}
         </div>
       </div>
 
-      {/* Filter Controls — always shown so user can change filters */}
       <div className="failures-filters">
-        {/* Status Filter */}
         <div className="filter-group">
-          <span className="filter-label">Status:</span>
+          <span className="filter-label">Status</span>
           <div className="filter-chips">
             {STATUS_OPTIONS.map((status) => (
               <button
                 key={status}
-                className={`filter-chip ${statusFilter.includes(status) ? "active" : ""} ${status === "Failed" ? "chip-failed" : "chip-timedout"}`}
+                className={`filter-chip${statusFilter.includes(status) ? " active" : ""}`}
                 onClick={() => toggleStatus(status)}
               >
                 {status}
@@ -126,58 +216,19 @@ function RecentFailures({
           </div>
         </div>
 
-        {/* Tasklist Filter */}
         <div className="filter-group">
-          <span className="filter-label">Tasklist:</span>
-          <div className="tasklist-filter-select">
-            <select
-              multiple
-              size={Math.min(availableTasklists.length, 5)}
-              value={tasklistFilter}
-              onChange={(e) => {
-                const selected = Array.from(
-                  e.target.options,
-                  (opt) => opt.selected && opt.value,
-                ).filter(Boolean);
-                onTasklistFilterChange(selected);
-              }}
-            >
-              {availableTasklists.map((tl) => (
-                <option key={tl} value={tl}>
-                  {tl}
-                </option>
-              ))}
-            </select>
-          </div>
-          {tasklistFilter.length > 0 && (
-            <div className="tasklist-selected-tags">
-              {tasklistFilter.map((tl) => (
-                <span key={tl} className="tasklist-tag">
-                  <code>{tl}</code>
-                  <button
-                    className="tag-remove"
-                    onClick={() => toggleTasklist(tl)}
-                    title="Remove filter"
-                  >
-                    &times;
-                  </button>
-                </span>
-              ))}
-              <button
-                className="tag-clear-all"
-                onClick={() => onTasklistFilterChange([])}
-                title="Clear all tasklist filters"
-              >
-                Clear all
-              </button>
-            </div>
-          )}
+          <span className="filter-label">Tasklist</span>
+          <TasklistDropdown
+            availableTasklists={availableTasklists}
+            tasklistFilter={tasklistFilter}
+            onTasklistFilterChange={onTasklistFilterChange}
+          />
         </div>
       </div>
 
       {!failures || failures.length === 0 ? (
         <div className="failures-empty">
-          <span className="empty-icon">&#10003;</span>
+          <span className="empty-icon">✓</span>
           <p>No recent failures</p>
         </div>
       ) : filteredFailures.length === 0 ? (
@@ -185,11 +236,8 @@ function RecentFailures({
           <table className="failures-table">
             <thead>
               <tr>
-                <th>Workflow ID</th>
-                <th>Type</th>
-                <th>Tasklist</th>
-                <th>Status</th>
-                <th>Close Time</th>
+                <th>Workflow ID</th><th>Type</th><th>Tasklist</th>
+                <th>Status</th><th>Close Time</th>
               </tr>
             </thead>
             <tbody>
@@ -206,11 +254,8 @@ function RecentFailures({
           <table className="failures-table">
             <thead>
               <tr>
-                <th>Workflow ID</th>
-                <th>Type</th>
-                <th>Tasklist</th>
-                <th>Status</th>
-                <th>Close Time</th>
+                <th>Workflow ID</th><th>Type</th><th>Tasklist</th>
+                <th>Status</th><th>Close Time</th>
               </tr>
             </thead>
             <tbody>
@@ -226,9 +271,7 @@ function RecentFailures({
                     <code>{f.tasklist}</code>
                   </td>
                   <td>
-                    <span
-                      className={`status-badge ${getStatusClass(f.status)}`}
-                    >
+                    <span className={`status-badge ${getStatusClass(f.status)}`}>
                       {f.status}
                     </span>
                   </td>

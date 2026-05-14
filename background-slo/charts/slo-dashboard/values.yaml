@@ -51,6 +51,9 @@ configmap:
   DEFAULT_ES: "cadence-1-1-0-elasticsearch-master-hl"
   # -- Default Elasticsearch index
   DEFAULT_INDEX: "cadence-visibility"
+  # -- Google OAuth Client ID (used by backend to verify ID tokens)
+  # -- make sure that docker image is built with the same VITE_GOOGLE_CLIENT_ID
+  GOOGLE_CLIENT_ID: "random.apps.googleusercontent.com"
 
 # -- Secret values (sensitive environment variables)
 # These will be stored as a Kubernetes Secret and injected as env vars.
