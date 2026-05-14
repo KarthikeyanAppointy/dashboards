@@ -1,0 +1,129 @@
+/* =============================================
+   P100 Latency by Workflow Type Section
+   ============================================= */
+
+.p100-by-workflow-section {
+    background: var(--card);
+    border-radius: 12px;
+    box-shadow: var(--shadow-md);
+    overflow: hidden;
+}
+
+.p100-count {
+    font-size: 0.8rem;
+    color: var(--purple);
+    font-weight: 600;
+    background: var(--purple-bg);
+    padding: 3px 12px;
+    border-radius: 10px;
+}
+
+.p100-table-container {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.p100-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.p100-table thead {
+    background: var(--muted);
+}
+
+.p100-table th {
+    padding: 10px 24px;
+    text-align: left;
+    font-weight: 700;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--muted-foreground);
+    border-bottom: 2px solid var(--border);
+    white-space: nowrap;
+}
+
+.p100-table th.col-p100-count,
+.p100-table th.col-p100-latency {
+    text-align: right;
+    padding-right: 24px;
+}
+
+.p100-table th.col-p100-workflow-type {
+    min-width: 200px;
+}
+
+.p100-table th.col-p100-latency {
+    min-width: 120px;
+}
+
+.p100-table td {
+    padding: 12px 24px;
+    color: var(--foreground);
+    vertical-align: middle;
+    border-bottom: 1px solid var(--border);
+}
+
+.p100-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.p100-table tbody tr:hover {
+    background: var(--purple-bg);
+}
+
+/* Workflow Type Cell */
+
+.p100-workflow-type-cell {
+    max-width: 0;
+}
+
+.p100-workflow-type-code {
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 0.8rem;
+    background: var(--purple-bg);
+    padding: 2px 8px;
+    border-radius: 4px;
+    color: var(--purple);
+    display: inline-block;
+    word-break: break-word;
+    white-space: normal;
+    max-width: 100%;
+    line-height: 1.4;
+}
+
+/* Count Cell */
+
+.p100-count-cell {
+    text-align: right;
+}
+
+.p100-count-badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 10px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--foreground);
+    background: var(--muted);
+}
+
+/* Latency Cell */
+
+.p100-latency-cell {
+    text-align: right;
+}
+
+.p100-latency-value {
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--purple);
+    background: var(--purple-bg);
+    padding: 3px 12px;
+    border-radius: 10px;
+    display: inline-block;
+    white-space: nowrap;
+}

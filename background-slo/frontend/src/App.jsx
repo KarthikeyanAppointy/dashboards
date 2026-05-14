@@ -1,9 +1,17 @@
 import { useState, useEffect, useCallback } from "react";
+import { Routes, Route, Navigate } from "react-router-dom";
 import SummaryCards from "./components/SummaryCards";
 import WorkflowTable from "./components/WorkflowTable";
 import TasklistLatency from "./components/TasklistLatency";
 import RecentFailures from "./components/RecentFailures";
+import ActivityErrors from "./components/ActivityErrors";
+import P100LatencyByWorkflow from "./components/P100LatencyByWorkflow";
+import Sidebar from "./components/Sidebar";
 import TenantSelector from "./components/TenantSelector";
+import DashboardPage from "./pages/DashboardPage";
+import RecentFailuresPage from "./pages/RecentFailuresPage";
+import ActivityErrorsPage from "./pages/ActivityErrorsPage";
+import P100LatencyPage from "./pages/P100LatencyPage";
 
 import "./App.css";
 
@@ -40,6 +48,22 @@ function App() {
     return saved ? saved.split(",") : ["Failed", "TimedOut"];
   });
 
+  // Status filter state for activity errors (empty = all)
+  const [activityStatusFilter, setActivityStatusFilter] = useState(() => {
+    const saved = localStorage.getItem("slo_dashboard_activity_status_filter");
+    return saved ? saved.split(",") : [];
+  });
+
+  // Activity error detail field name (ES field for actual error messages)
+  const [activityErrorDetailField, setActivityErrorDetailField] = useState(
+    () => {
+      const saved = localStorage.getItem(
+        "slo_dashboard_activity_error_detail_field",
+      );
+      return saved || "";
+    },
+  );
+
   // Tasklist filter state for recent failures
   const [tasklistFilter, setTasklistFilter] = useState(() => {
     const saved = localStorage.getItem("slo_dashboard_tasklist_filter");
@@ -64,6 +88,22 @@ function App() {
 
   // Total failed count from API response
   const [totalFailed, setTotalFailed] = useState(0);
+
+  // Theme state
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem("slo_dashboard_theme");
+    return saved || "light";
+  });
+
+  // Apply theme to document
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("slo_dashboard_theme", theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === "light" ? "dark" : "light"));
+  };
 
   // Fetch tenants list
   const fetchTenants = useCallback(async () => {
@@ -116,6 +156,12 @@ function App() {
     if (offset > 0) {
       params.set("offset", String(offset));
     }
+    if (activityStatusFilter.length > 0) {
+      params.set("activity_status_filter", activityStatusFilter.join(","));
+    }
+    if (activityErrorDetailField) {
+      params.set("activity_error_detail_field", activityErrorDetailField);
+    }
     return params.toString();
   }, [
     selectedTenantId,
@@ -126,6 +172,8 @@ function App() {
     startTime,
     endTime,
     offset,
+    activityStatusFilter,
+    activityErrorDetailField,
   ]);
 
   // Fetch workflow data for the selected tenant
@@ -175,10 +223,10 @@ function App() {
     }
   }, [fetchData, selectedTenantId]);
 
-  // Poll every 5s
+  // Poll every 10s
   useEffect(() => {
     if (!selectedTenantId) return;
-    const interval = setInterval(fetchData, 5000);
+    const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
   }, [fetchData, selectedTenantId]);
 
@@ -204,6 +252,21 @@ function App() {
   const handleStatusFilterChange = (newFilter) => {
     setStatusFilter(newFilter);
     localStorage.setItem("slo_dashboard_status_filter", newFilter.join(","));
+  };
+
+  // Handle activity status filter change
+  const handleActivityStatusFilterChange = (newFilter) => {
+    setActivityStatusFilter(newFilter);
+    localStorage.setItem(
+      "slo_dashboard_activity_status_filter",
+      newFilter.join(","),
+    );
+  };
+
+  // Handle activity error detail field change
+  const handleActivityErrorDetailFieldChange = (newField) => {
+    setActivityErrorDetailField(newField);
+    localStorage.setItem("slo_dashboard_activity_error_detail_field", newField);
   };
 
   // Handle tasklist filter change
@@ -237,12 +300,44 @@ function App() {
     setOffset(newOffset);
   };
 
+  // Convert Unix timestamp (seconds) to datetime-local string value
+  const tsToDt = (ts) => {
+    if (!ts) return "";
+    const d = new Date(ts * 1000);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  // Convert datetime-local string value to Unix timestamp (seconds)
+  const dtToTs = (dt) => {
+    if (!dt) return null;
+    const d = new Date(dt);
+    return Math.floor(d.getTime() / 1000);
+  };
+
+  const WINDOW_OPTIONS = [
+    { label: "Last 1h", value: 3600 },
+    { label: "Last 3h", value: 10800 },
+    { label: "Last 6h", value: 21600 },
+    { label: "Last 12h", value: 43200 },
+    { label: "Last 1d", value: 86400 },
+  ];
+
+  const clearDates = () => {
+    handleStartTimeChange(null);
+    handleEndTimeChange(null);
+  };
+
   return (
     <div className="app">
       <header className="app-header">
         <div className="header-left">
           <h1 className="header-title">
-            <span className="header-icon">&#9670;</span>
+            <img
+              className="header-logo"
+              src="https://cdn.appointy.com/master/images/branding/icon.png"
+              alt="Appointy"
+            />
             Background SLO Dashboard
           </h1>
           {data && data.domain_name && (
@@ -250,6 +345,13 @@ function App() {
           )}
         </div>
         <div className="header-right">
+          <button
+            className="theme-toggle"
+            onClick={toggleTheme}
+            title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+          >
+            {theme === "light" ? "\u263D" : "\u2600"}
+          </button>
           <TenantSelector
             tenants={tenants}
             selectedTenantId={selectedTenantId}
@@ -269,40 +371,101 @@ function App() {
         </div>
       )}
 
+      <div className="app-toolbar">
+        <div className="toolbar-group">
+          <span className="toolbar-label">Window:</span>
+          <select
+            className="toolbar-select"
+            value={tasklistWindow}
+            onChange={(e) => handleTasklistWindowChange(Number(e.target.value))}
+          >
+            {WINDOW_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="toolbar-group">
+          <span className="toolbar-label">From:</span>
+          <input
+            type="datetime-local"
+            className="toolbar-datetime"
+            value={tsToDt(startTime)}
+            onChange={(e) => handleStartTimeChange(dtToTs(e.target.value))}
+          />
+          <span className="toolbar-label">To:</span>
+          <input
+            type="datetime-local"
+            className="toolbar-datetime"
+            value={tsToDt(endTime)}
+            onChange={(e) => handleEndTimeChange(dtToTs(e.target.value))}
+          />
+          {(startTime || endTime) && (
+            <button className="toolbar-clear-btn" onClick={clearDates}>
+              Clear Dates
+            </button>
+          )}
+        </div>
+      </div>
+
       <main className="app-main">
         {data && (
-          <>
-            <SummaryCards
-              rates30min={data.rates_30min}
-              rates1hr={data.rates_1hr}
-              rates1d={data.rates_1d}
-              rates7d={data.rates_7d}
-              rates30d={data.rates_30d}
-            />
-            <WorkflowTable windows={data.windows} />
-            <TasklistLatency
-              tasklists={data.tasklist_latency}
-              tasklistWindow={tasklistWindow}
-              onTasklistWindowChange={handleTasklistWindowChange}
-            />
-            <RecentFailures
-              failures={data.recent_failed}
-              limit={limit}
-              onLimitChange={handleLimitChange}
-              statusFilter={statusFilter}
-              onStatusFilterChange={handleStatusFilterChange}
-              tasklistFilter={tasklistFilter}
-              onTasklistFilterChange={handleTasklistFilterChange}
-              availableTasklists={availableTasklists}
-              startTime={startTime}
-              endTime={endTime}
-              onStartTimeChange={handleStartTimeChange}
-              onEndTimeChange={handleEndTimeChange}
-              offset={offset}
-              onOffsetChange={handleOffsetChange}
-              totalFailed={totalFailed}
-            />
-          </>
+          <div className="app-layout">
+            <Sidebar />
+            <div className="app-content">
+              <Routes>
+                <Route
+                  path="/"
+                  element={
+                    <DashboardPage
+                      data={data}
+                      tasklistWindow={tasklistWindow}
+                    />
+                  }
+                />
+                <Route
+                  path="/recent-failures"
+                  element={
+                    <RecentFailuresPage
+                      data={data}
+                      limit={limit}
+                      onLimitChange={handleLimitChange}
+                      statusFilter={statusFilter}
+                      onStatusFilterChange={handleStatusFilterChange}
+                      tasklistFilter={tasklistFilter}
+                      onTasklistFilterChange={handleTasklistFilterChange}
+                      availableTasklists={availableTasklists}
+                      offset={offset}
+                      onOffsetChange={handleOffsetChange}
+                      totalFailed={totalFailed}
+                    />
+                  }
+                />
+                <Route
+                  path="/activity-errors"
+                  element={
+                    <ActivityErrorsPage
+                      data={data}
+                      activityStatusFilter={activityStatusFilter}
+                      onActivityStatusFilterChange={
+                        handleActivityStatusFilterChange
+                      }
+                      activityErrorDetailField={activityErrorDetailField}
+                      onActivityErrorDetailFieldChange={
+                        handleActivityErrorDetailFieldChange
+                      }
+                    />
+                  }
+                />
+                <Route
+                  path="/p100-latency"
+                  element={<P100LatencyPage data={data} />}
+                />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            </div>
+          </div>
         )}
         {!data && !error && selectedTenantId && (
           <div className="initial-loading">

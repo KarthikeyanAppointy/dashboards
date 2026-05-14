@@ -18,29 +18,10 @@ function RecentFailures({
   tasklistFilter,
   onTasklistFilterChange,
   availableTasklists,
-  startTime,
-  endTime,
-  onStartTimeChange,
-  onEndTimeChange,
   offset,
   onOffsetChange,
   totalFailed,
 }) {
-  // Convert Unix timestamp (seconds) to datetime-local string value
-  const timestampToDatetimeLocal = (ts) => {
-    if (!ts) return "";
-    const d = new Date(ts * 1000);
-    const pad = (n) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  };
-
-  // Convert datetime-local string value to Unix timestamp (seconds)
-  const datetimeLocalToTimestamp = (dt) => {
-    if (!dt) return null;
-    const d = new Date(dt);
-    return Math.floor(d.getTime() / 1000);
-  };
-
   // Pagination calculations
   const pageSize = limit || 20;
   const currentPage = Math.floor(offset / pageSize) + 1;
@@ -190,42 +171,6 @@ function RecentFailures({
                 Clear all
               </button>
             </div>
-          )}
-        </div>
-
-        {/* Date/Time Range Filter */}
-        <div className="filter-group">
-          <span className="filter-label">From:</span>
-          <input
-            type="datetime-local"
-            className="date-time-input"
-            value={timestampToDatetimeLocal(startTime)}
-            onChange={(e) =>
-              onStartTimeChange(datetimeLocalToTimestamp(e.target.value))
-            }
-          />
-          <span className="filter-label" style={{ minWidth: "auto" }}>
-            To:
-          </span>
-          <input
-            type="datetime-local"
-            className="date-time-input"
-            value={timestampToDatetimeLocal(endTime)}
-            onChange={(e) =>
-              onEndTimeChange(datetimeLocalToTimestamp(e.target.value))
-            }
-          />
-          {(startTime || endTime) && (
-            <button
-              className="filter-chip active"
-              onClick={() => {
-                onStartTimeChange(null);
-                onEndTimeChange(null);
-              }}
-              title="Clear date filter"
-            >
-              Clear Dates
-            </button>
           )}
         </div>
       </div>

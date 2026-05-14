@@ -26,6 +26,7 @@ type Config struct {
 	Index      string
 	DomainID   string
 	DomainName string
+	ESApiKey   string
 }
 
 func getEnv(key, fallback string) string {
@@ -47,6 +48,7 @@ type Tenant struct {
 	DomainName string    `json:"domain_name"`
 	ESEndpoint string    `json:"es_endpoint"`
 	ESIndex    string    `json:"es_index"`
+	ESApiKey   string    `json:"es_api_key"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
@@ -59,7 +61,7 @@ type TenantStore struct {
 // List returns all tenants.
 func (s *TenantStore) List() ([]Tenant, error) {
 	rows, err := s.DB.Query(
-		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, created_at, updated_at
+		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, created_at, updated_at
 		 FROM tenants ORDER BY id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list tenants: %w", err)
@@ -70,7 +72,7 @@ func (s *TenantStore) List() ([]Tenant, error) {
 	for rows.Next() {
 		var t Tenant
 		if err := rows.Scan(&t.ID, &t.Name, &t.DomainID, &t.DomainName,
-			&t.ESEndpoint, &t.ESIndex, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan tenant: %w", err)
 		}
 		tenants = append(tenants, t)
@@ -82,10 +84,10 @@ func (s *TenantStore) List() ([]Tenant, error) {
 func (s *TenantStore) GetByID(id int) (*Tenant, error) {
 	var t Tenant
 	err := s.DB.QueryRow(
-		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, created_at, updated_at
+		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, created_at, updated_at
 		 FROM tenants WHERE id = $1`, id).
 		Scan(&t.ID, &t.Name, &t.DomainID, &t.DomainName,
-			&t.ESEndpoint, &t.ESIndex, &t.CreatedAt, &t.UpdatedAt)
+			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.CreatedAt, &t.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -96,15 +98,15 @@ func (s *TenantStore) GetByID(id int) (*Tenant, error) {
 }
 
 // Create inserts a new tenant and returns it.
-func (s *TenantStore) Create(name, domainID, domainName, esEndpoint, esIndex string) (*Tenant, error) {
+func (s *TenantStore) Create(name, domainID, domainName, esEndpoint, esIndex, esApiKey string) (*Tenant, error) {
 	var t Tenant
 	err := s.DB.QueryRow(
-		`INSERT INTO tenants (name, domain_id, domain_name, es_endpoint, es_index)
-		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id, name, domain_id, domain_name, es_endpoint, es_index, created_at, updated_at`,
-		name, domainID, domainName, esEndpoint, esIndex).
+		`INSERT INTO tenants (name, domain_id, domain_name, es_endpoint, es_index, es_api_key)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, created_at, updated_at`,
+		name, domainID, domainName, esEndpoint, esIndex, esApiKey).
 		Scan(&t.ID, &t.Name, &t.DomainID, &t.DomainName,
-			&t.ESEndpoint, &t.ESIndex, &t.CreatedAt, &t.UpdatedAt)
+			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create tenant: %w", err)
 	}
@@ -135,6 +137,7 @@ func (s *TenantStore) SeedDefault() error {
 	domainName := getEnv("DEFAULT_DOMAIN_NAME", "unknown")
 	esEndpoint := getEnv("DEFAULT_ES", "http://localhost:9000")
 	esIndex := getEnv("DEFAULT_INDEX", "cadence-visibility")
+	esApiKey := getEnv("DEFAULT_ES_API_KEY", "")
 
 	// Check if any tenant exists
 	var count int
@@ -145,7 +148,7 @@ func (s *TenantStore) SeedDefault() error {
 
 	if count == 0 {
 		// Table is empty — create default tenant
-		tenant, err := s.Create(name, domainID, domainName, esEndpoint, esIndex)
+		tenant, err := s.Create(name, domainID, domainName, esEndpoint, esIndex, esApiKey)
 		if err != nil {
 			return fmt.Errorf("seed default tenant: %w", err)
 		}
@@ -156,9 +159,9 @@ func (s *TenantStore) SeedDefault() error {
 	// Check if the first tenant has an empty domain_id and update it
 	var firstTenant Tenant
 	err = s.DB.QueryRow(
-		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index FROM tenants ORDER BY id ASC LIMIT 1`).
+		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key FROM tenants ORDER BY id ASC LIMIT 1`).
 		Scan(&firstTenant.ID, &firstTenant.Name, &firstTenant.DomainID, &firstTenant.DomainName,
-			&firstTenant.ESEndpoint, &firstTenant.ESIndex)
+			&firstTenant.ESEndpoint, &firstTenant.ESIndex, &firstTenant.ESApiKey)
 	if err != nil {
 		return fmt.Errorf("check first tenant: %w", err)
 	}
@@ -166,8 +169,8 @@ func (s *TenantStore) SeedDefault() error {
 	// Only update if domain_id is empty (stub tenant from previous run without env vars)
 	if firstTenant.DomainID == "" && domainID != "" {
 		_, err := s.DB.Exec(
-			`UPDATE tenants SET name=$1, domain_id=$2, domain_name=$3, es_endpoint=$4, es_index=$5, updated_at=NOW() WHERE id=$6`,
-			name, domainID, domainName, esEndpoint, esIndex, firstTenant.ID)
+			`UPDATE tenants SET name=$1, domain_id=$2, domain_name=$3, es_endpoint=$4, es_index=$5, es_api_key=$6, updated_at=NOW() WHERE id=$7`,
+			name, domainID, domainName, esEndpoint, esIndex, esApiKey, firstTenant.ID)
 		if err != nil {
 			return fmt.Errorf("update stub tenant %d: %w", firstTenant.ID, err)
 		}
@@ -192,6 +195,7 @@ func EnsureTable(db *sql.DB) error {
 		domain_name TEXT NOT NULL DEFAULT '',
 		es_endpoint TEXT NOT NULL DEFAULT 'http://localhost:9000',
 		es_index TEXT NOT NULL DEFAULT 'cadence-visibility',
+		es_api_key TEXT NOT NULL DEFAULT '',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);`
@@ -247,6 +251,7 @@ type WindowData struct {
 	TimedOut      int    `json:"timed_out"`
 	Cancelled     int    `json:"cancelled"`
 	Open          int    `json:"open"`
+	P100LatencyMs int64  `json:"p100_latency_ms"`
 	StartedRate   string `json:"started_rate"`
 	CompletedRate string `json:"completed_rate"`
 	FailedRate    string `json:"failed_rate"`
@@ -280,6 +285,20 @@ type TasklistLatencyEntry struct {
 	WorkflowCount int     `json:"workflow_count"`
 }
 
+// P100ByWorkflowEntry represents the P100 (max) latency for a workflow type.
+type P100ByWorkflowEntry struct {
+	WorkflowType  string `json:"workflow_type"`
+	Count         int    `json:"count"`
+	P100LatencyMs int64  `json:"p100_latency_ms"`
+}
+
+// ActivityErrorEntry represents a single activity error type and its count in open workflows.
+type ActivityErrorEntry struct {
+	WorkflowType string `json:"workflow_type"`
+	Error        string `json:"error"`
+	Count        int    `json:"count"`
+}
+
 // APIResponse is the top-level JSON envelope returned by the endpoint.
 type APIResponse struct {
 	DomainName      string                 `json:"domain_name"`
@@ -294,6 +313,8 @@ type APIResponse struct {
 	RecentFailed    []RecentWorkflow       `json:"recent_failed"`
 	TotalFailed     int                    `json:"total_failed"`
 	TasklistLatency []TasklistLatencyEntry `json:"tasklist_latency"`
+	ActivityErrors  []ActivityErrorEntry   `json:"activity_errors"`
+	P100ByWorkflow  []P100ByWorkflowEntry  `json:"p100_by_workflow"`
 }
 
 // ============================================================
@@ -333,6 +354,29 @@ type esMissingAgg struct {
 	DocCount int `json:"doc_count"`
 }
 
+// esMaxValue holds a single max aggregation value.
+type esMaxValue struct {
+	Value float64 `json:"value"`
+}
+
+// esP100Latency holds the p100_latency filter aggregation result.
+type esP100Latency struct {
+	DocCount    int        `json:"doc_count"`
+	MaxDuration esMaxValue `json:"max_duration"`
+}
+
+// esP100ByWorkflowBucket is a single bucket in the by_workflow_type aggregation.
+type esP100ByWorkflowBucket struct {
+	Key         string     `json:"key"`
+	DocCount    int        `json:"doc_count"`
+	MaxDuration esMaxValue `json:"max_duration"`
+}
+
+// esP100ByWorkflowAgg holds the by_workflow_type aggregation result.
+type esP100ByWorkflowAgg struct {
+	Buckets []esP100ByWorkflowBucket `json:"buckets"`
+}
+
 // esTasklistAvgLatency holds the avg latency value for a tasklist bucket.
 type esTasklistAvgLatency struct {
 	Value float64 `json:"value"`
@@ -352,11 +396,26 @@ type esTasklistAgg struct {
 	Buckets                 []esTasklistLatencyBucket `json:"buckets"`
 }
 
+// esActivityErrorBucket is a single bucket in the by_activity_error aggregation.
+type esActivityErrorBucket struct {
+	Key      interface{}         `json:"key"`
+	DocCount int                 `json:"doc_count"`
+	ByError  *esActivityErrorAgg `json:"by_error,omitempty"`
+}
+
+// esActivityErrorAgg holds the by_activity_error aggregation result.
+type esActivityErrorAgg struct {
+	Buckets []esActivityErrorBucket `json:"buckets"`
+}
+
 // esAggregations holds the top-level aggregations block.
 type esAggregations struct {
-	ByStatus   esByStatusAgg  `json:"by_status"`
-	Open       esMissingAgg   `json:"open"`
-	ByTasklist *esTasklistAgg `json:"by_tasklist,omitempty"`
+	ByStatus        esByStatusAgg        `json:"by_status"`
+	Open            esMissingAgg         `json:"open"`
+	P100Latency     *esP100Latency       `json:"p100_latency,omitempty"`
+	ByTasklist      *esTasklistAgg       `json:"by_tasklist,omitempty"`
+	ByActivityError *esActivityErrorAgg  `json:"by_activity_error,omitempty"`
+	P100ByWorkflow  *esP100ByWorkflowAgg `json:"by_workflow_type,omitempty"`
 }
 
 // esSource is the _source of a hit in the failed/timed-out queries.
@@ -409,7 +468,7 @@ type esMultiSearchResponse struct {
 // recent failed/timed-out workflows and one for tasklist latency.
 // statusFilter controls which CloseStatus values to include (default [1, 5]).
 // tasklistFilter optionally restricts to specific tasklist names.
-func buildMsearchBody(cfg Config, nowNanos int64, limit int, tasklistWindow int64, statusFilter []int, tasklistFilter []string, fromNanos, toNanos int64, offset int) []byte {
+func buildMsearchBody(cfg Config, nowNanos int64, limit int, tasklistWindow int64, statusFilter []int, tasklistFilter []string, fromNanos, toNanos int64, offset int, activityErrorField string, activityStatusConditions []int, activityErrorDetailField string) []byte {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -437,6 +496,16 @@ func buildMsearchBody(cfg Config, nowNanos int64, limit int, tasklistWindow int6
 	// --- Tasklist avg latency ---
 	_ = enc.Encode(header)
 	_ = enc.Encode(buildTasklistLatencyQuery(nowNanos, domainFilter, tasklistWindow))
+
+	// --- Activity errors (with status filter) ---
+	if activityErrorField != "" {
+		_ = enc.Encode(header)
+		_ = enc.Encode(buildActivityErrorQuery(domainFilter, activityErrorField, activityStatusConditions, activityErrorDetailField))
+	}
+
+	// --- P100 latency by workflow type (top 100 completed workflows) ---
+	_ = enc.Encode(header)
+	_ = enc.Encode(buildP100ByWorkflowTypeQuery(nowNanos, domainFilter))
 
 	return buf.Bytes()
 }
@@ -488,6 +557,21 @@ func buildWindowQuery(fromNanos, toNanos int64, domainFilter []interface{}) map[
 			"open": map[string]interface{}{
 				"missing": map[string]string{
 					"field": "CloseTime",
+				},
+			},
+			"p100_latency": map[string]interface{}{
+				"filter": map[string]interface{}{
+					"term": map[string]int{"CloseStatus": 0},
+				},
+				"aggs": map[string]interface{}{
+					"max_duration": map[string]interface{}{
+						"max": map[string]interface{}{
+							"script": map[string]interface{}{
+								"source": "doc['CloseTime'].value - doc['StartTime'].value",
+								"lang":   "painless",
+							},
+						},
+					},
 				},
 			},
 		},
@@ -621,6 +705,124 @@ func buildTasklistLatencyQuery(nowNanos int64, domainFilter []interface{}, windo
 	}
 }
 
+// buildActivityErrorQuery constructs an ES query to find open workflows and group them
+// by a configurable field (e.g., WorkflowType or a custom search attribute for activity errors).
+func buildActivityErrorQuery(domainFilter []interface{}, activityErrorField string, statusConditions []int, errorField string) map[string]interface{} {
+	must := []interface{}{}
+
+	for _, f := range domainFilter {
+		must = append(must, f)
+	}
+
+	boolQuery := map[string]interface{}{
+		"must": must,
+	}
+
+	// Build status filter conditions
+	if len(statusConditions) > 0 {
+		should := []interface{}{}
+		for _, sc := range statusConditions {
+			switch sc {
+			case -1: // open (no CloseTime)
+				should = append(should, map[string]interface{}{
+					"bool": map[string]interface{}{
+						"must_not": []interface{}{
+							map[string]interface{}{
+								"exists": map[string]string{"field": "CloseTime"},
+							},
+						},
+					},
+				})
+			case -2: // closed (has CloseTime)
+				should = append(should, map[string]interface{}{
+					"exists": map[string]string{"field": "CloseTime"},
+				})
+			default: // specific CloseStatus value
+				should = append(should, map[string]interface{}{
+					"term": map[string]int{"CloseStatus": sc},
+				})
+			}
+		}
+		boolQuery["should"] = should
+		boolQuery["minimum_should_match"] = 1
+	}
+
+	// Build aggregations
+	aggs := map[string]interface{}{
+		"by_activity_error": map[string]interface{}{
+			"terms": map[string]interface{}{
+				"field": activityErrorField,
+				"size":  50,
+				"order": map[string]string{"_count": "desc"},
+			},
+		},
+	}
+
+	// Add nested error aggregation if errorField is provided
+	if errorField != "" && errorField != activityErrorField {
+		innerAggs := aggs["by_activity_error"].(map[string]interface{})
+		innerAggs["aggs"] = map[string]interface{}{
+			"by_error": map[string]interface{}{
+				"terms": map[string]interface{}{
+					"field": errorField,
+					"size":  10,
+					"order": map[string]string{"_count": "desc"},
+				},
+			},
+		}
+	}
+
+	return map[string]interface{}{
+		"query": map[string]interface{}{
+			"bool": boolQuery,
+		},
+		"size": 0,
+		"aggs": aggs,
+	}
+}
+
+// buildP100ByWorkflowTypeQuery constructs an ES query to find the top 100 workflow types
+// by count among completed workflows, computing the P100 (max) latency for each.
+func buildP100ByWorkflowTypeQuery(nowNanos int64, domainFilter []interface{}) map[string]interface{} {
+	must := []interface{}{
+		map[string]interface{}{
+			"term": map[string]int{"CloseStatus": 0},
+		},
+	}
+
+	for _, f := range domainFilter {
+		must = append(must, f)
+	}
+
+	return map[string]interface{}{
+		"query": map[string]interface{}{
+			"bool": map[string]interface{}{
+				"must": must,
+			},
+		},
+		"size": 0,
+		"aggs": map[string]interface{}{
+			"by_workflow_type": map[string]interface{}{
+				"terms": map[string]interface{}{
+					"field": "WorkflowType",
+					"size":  100,
+					"order": map[string]string{"_count": "desc"},
+				},
+				"aggs": map[string]interface{}{
+					"max_duration": map[string]interface{}{
+						"max": map[string]interface{}{
+							"script": map[string]interface{}{
+								"source": "doc['CloseTime'].value - doc['StartTime'].value",
+								"lang":   "painless",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
 // ============================================================
 // ES Response Parser
 // ============================================================
@@ -656,6 +858,7 @@ func parseWindowResponse(resp esResponse, w WindowConfig) WindowData {
 	cancelled := 0
 	timedOut := 0
 	openWF := 0
+	var p100LatencyNs float64
 
 	if resp.Aggregations != nil {
 		for _, b := range resp.Aggregations.ByStatus.Buckets {
@@ -671,9 +874,19 @@ func parseWindowResponse(resp esResponse, w WindowConfig) WindowData {
 			}
 		}
 		openWF = resp.Aggregations.Open.DocCount
+
+		if resp.Aggregations.P100Latency != nil {
+			p100LatencyNs = resp.Aggregations.P100Latency.MaxDuration.Value
+		}
 	}
 
 	secs := float64(w.Seconds)
+
+	// Convert latency from nanoseconds to milliseconds
+	p100Ms := int64(0)
+	if p100LatencyNs > 0 {
+		p100Ms = int64(p100LatencyNs / 1_000_000)
+	}
 
 	return WindowData{
 		Label:         w.Label,
@@ -684,6 +897,7 @@ func parseWindowResponse(resp esResponse, w WindowConfig) WindowData {
 		TimedOut:      timedOut,
 		Cancelled:     cancelled,
 		Open:          openWF,
+		P100LatencyMs: p100Ms,
 		StartedRate:   formatRate(totalHits, secs),
 		CompletedRate: formatRate(completed, secs),
 		FailedRate:    formatRate(failed, secs),
@@ -767,9 +981,9 @@ func formatCloseTime(raw json.RawMessage) string {
 // ============================================================
 
 // queryElasticsearch sends the _msearch request and returns the parsed response.
-func queryElasticsearch(cfg Config, limit int, tasklistWindow int64, statusFilter []int, tasklistFilter []string, fromNanos, toNanos int64, offset int) (*esMultiSearchResponse, error) {
+func queryElasticsearch(cfg Config, limit int, tasklistWindow int64, statusFilter []int, tasklistFilter []string, fromNanos, toNanos int64, offset int, activityErrorField string, activityStatusConditions []int, activityErrorDetailField string) (*esMultiSearchResponse, error) {
 	nowNanos := time.Now().UnixNano()
-	body := buildMsearchBody(cfg, nowNanos, limit, tasklistWindow, statusFilter, tasklistFilter, fromNanos, toNanos, offset)
+	body := buildMsearchBody(cfg, nowNanos, limit, tasklistWindow, statusFilter, tasklistFilter, fromNanos, toNanos, offset, activityErrorField, activityStatusConditions, activityErrorDetailField)
 
 	url := fmt.Sprintf("%s/_msearch", strings.TrimRight(cfg.ES, "/"))
 
@@ -778,6 +992,9 @@ func queryElasticsearch(cfg Config, limit int, tasklistWindow int64, statusFilte
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-ndjson")
+	if cfg.ESApiKey != "" {
+		req.Header.Set("x-api-key", cfg.ESApiKey)
+	}
 
 	timeout := 15 * time.Second
 	if limit > 100 {
@@ -815,9 +1032,12 @@ func queryElasticsearch(cfg Config, limit int, tasklistWindow int64, statusFilte
 // ============================================================
 
 // buildResponse assembles the final APIResponse from the _msearch results.
-func buildResponse(cfg Config, tenantID int, msResp *esMultiSearchResponse, limit int, statusFilter []int) (APIResponse, int) {
+func buildResponse(cfg Config, tenantID int, msResp *esMultiSearchResponse, limit int, statusFilter []int, activityErrorField string, activityErrorDetailField string) (APIResponse, int) {
 	responses := msResp.Responses
-	expected := len(windows) + 2 // window queries + recent failed/timed-out + tasklist latency
+	expected := len(windows) + 3 // window queries + recent failed/timed-out + tasklist latency + p100 by workflow type
+	if activityErrorField != "" {
+		expected++ // + activity error query
+	}
 
 	// Ensure we have enough responses
 	if len(responses) < expected {
@@ -881,6 +1101,57 @@ func buildResponse(cfg Config, tenantID int, msResp *esMultiSearchResponse, limi
 		}
 	}
 
+	// --- Parse activity errors in open workflows ---
+	var activityErrors []ActivityErrorEntry
+	if activityErrorField != "" {
+		activityErrorIdx := len(windows) + 2 // after windows, recent, and tasklist latency
+		if activityErrorIdx < len(responses) {
+			resp := responses[activityErrorIdx]
+			if resp.Aggregations != nil && resp.Aggregations.ByActivityError != nil {
+				for _, b := range resp.Aggregations.ByActivityError.Buckets {
+					if b.ByError != nil && len(b.ByError.Buckets) > 0 {
+						// Flatten nested aggregation: each workflow type with its error reasons
+						for _, eb := range b.ByError.Buckets {
+							activityErrors = append(activityErrors, ActivityErrorEntry{
+								WorkflowType: fmt.Sprintf("%v", b.Key),
+								Error:        fmt.Sprintf("%v", eb.Key),
+								Count:        eb.DocCount,
+							})
+						}
+					} else {
+						activityErrors = append(activityErrors, ActivityErrorEntry{
+							WorkflowType: fmt.Sprintf("%v", b.Key),
+							Count:        b.DocCount,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	// --- Parse P100 latency by workflow type (top 100 completed workflows) ---
+	var p100ByWorkflow []P100ByWorkflowEntry
+	p100WorkflowIdx := len(windows) + 2 // after windows and recent and tasklist latency
+	if activityErrorField != "" {
+		p100WorkflowIdx++ // after activity errors
+	}
+	if p100WorkflowIdx < len(responses) {
+		resp := responses[p100WorkflowIdx]
+		if resp.Aggregations != nil && resp.Aggregations.P100ByWorkflow != nil {
+			for _, b := range resp.Aggregations.P100ByWorkflow.Buckets {
+				p100Ms := int64(0)
+				if b.MaxDuration.Value > 0 {
+					p100Ms = int64(b.MaxDuration.Value / 1_000_000)
+				}
+				p100ByWorkflow = append(p100ByWorkflow, P100ByWorkflowEntry{
+					WorkflowType:  b.Key,
+					Count:         b.DocCount,
+					P100LatencyMs: p100Ms,
+				})
+			}
+		}
+	}
+
 	ts := time.Now().Format("2006-01-02 15:04:05")
 
 	return APIResponse{
@@ -896,6 +1167,8 @@ func buildResponse(cfg Config, tenantID int, msResp *esMultiSearchResponse, limi
 		RecentFailed:    recentFailed,
 		TotalFailed:     totalFailed,
 		TasklistLatency: tasklistLatency,
+		ActivityErrors:  activityErrors,
+		P100ByWorkflow:  p100ByWorkflow,
 	}, totalFailed
 }
 
@@ -940,7 +1213,46 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// workflowsHandler handles GET requests to /api/workflows with optional ?tenant_id=X.
+// parseActivityErrorStatusFilter converts a status filter query parameter for activity errors
+// to a slice of int conditions. Special codes: -1 = open, -2 = closed, other values = CloseStatus.
+// Accepts: open, closed, failed, completed, cancelled, terminated, timeout, continuedasnew
+func parseActivityErrorStatusFilter(filter string) []int {
+	if filter == "" {
+		return nil // default: no filter (show all)
+	}
+
+	statusMap := map[string]int{
+		"open":           -1,
+		"closed":         -2,
+		"failed":         1,
+		"completed":      2,
+		"cancelled":      3,
+		"terminated":     4,
+		"timeout":        5,
+		"continuedasnew": 6,
+	}
+
+	seen := make(map[int]bool)
+	var result []int
+	for _, s := range strings.Split(filter, ",") {
+		s = strings.TrimSpace(s)
+		s = strings.ToLower(s)
+		s = strings.ReplaceAll(s, " ", "")
+		s = strings.ReplaceAll(s, "_", "")
+		if code, ok := statusMap[s]; ok && !seen[code] {
+			seen[code] = true
+			result = append(result, code)
+		}
+	}
+
+	// If both open and closed are selected, it's equivalent to no filter (all workflows)
+	if seen[-1] && seen[-2] {
+		return nil
+	}
+
+	return result
+}
+
 // parseStatusFilter converts a status filter query parameter (e.g. "Failed,TimedOut") to
 // a slice of ES CloseStatus integer values. If the string is empty, returns [1, 5] (both).
 func parseStatusFilter(filter string) []int {
@@ -1032,6 +1344,23 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Parse activity_error_field from query string (default: "WorkflowType")
+	activityErrorField := "WorkflowType"
+	if aefStr := r.URL.Query().Get("activity_error_field"); aefStr != "" {
+		activityErrorField = aefStr
+	}
+
+	// Parse activity_status_filter from query string for activity errors (comma-separated)
+	// Values: open, closed, failed, completed, cancelled, terminated, timeout, continuedasnew
+	activityStatusFilterStr := r.URL.Query().Get("activity_status_filter")
+	activityStatusConditions := parseActivityErrorStatusFilter(activityStatusFilterStr)
+
+	// Parse activity_error_detail_field from query string for actual error details
+	activityErrorDetailField := ""
+	if aedfStr := r.URL.Query().Get("activity_error_detail_field"); aedfStr != "" {
+		activityErrorDetailField = aedfStr
+	}
+
 	// Parse tenant_id from query string
 	tenantIDStr := r.URL.Query().Get("tenant_id")
 	var tenantID int
@@ -1078,10 +1407,11 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 		Index:      tenant.ESIndex,
 		DomainID:   tenant.DomainID,
 		DomainName: tenant.DomainName,
+		ESApiKey:   tenant.ESApiKey,
 	}
 
 	// Query Elasticsearch
-	msResp, err := queryElasticsearch(cfg, limit, tasklistWindow, statusFilter, tasklistFilter, fromNanos, toNanos, offset)
+	msResp, err := queryElasticsearch(cfg, limit, tasklistWindow, statusFilter, tasklistFilter, fromNanos, toNanos, offset, activityErrorField, activityStatusConditions, activityErrorDetailField)
 	if err != nil {
 		log.Printf("ERROR: ES query failed: %v", err)
 		writeJSONError(w, fmt.Sprintf("ES query failed: %v", err), http.StatusInternalServerError)
@@ -1089,7 +1419,7 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build the response
-	apiResp, _ := buildResponse(cfg, tenant.ID, msResp, limit, statusFilter)
+	apiResp, _ := buildResponse(cfg, tenant.ID, msResp, limit, statusFilter, activityErrorField, activityErrorDetailField)
 
 	// Serialize and write
 	writeJSON(w, apiResp, http.StatusOK)
@@ -1117,6 +1447,7 @@ func tenantsHandler(w http.ResponseWriter, r *http.Request) {
 			DomainName string `json:"domain_name"`
 			ESEndpoint string `json:"es_endpoint"`
 			ESIndex    string `json:"es_index"`
+			ESApiKey   string `json:"es_api_key"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSONError(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
@@ -1135,6 +1466,10 @@ func tenantsHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "domain_name is required", http.StatusBadRequest)
 			return
 		}
+		if req.ESApiKey == "" {
+			writeJSONError(w, "es_api_key is required", http.StatusBadRequest)
+			return
+		}
 
 		// Use defaults for empty fields
 		if req.ESEndpoint == "" {
@@ -1144,7 +1479,7 @@ func tenantsHandler(w http.ResponseWriter, r *http.Request) {
 			req.ESIndex = "cadence-visibility"
 		}
 
-		tenant, err := tenantStore.Create(req.Name, req.DomainID, req.DomainName, req.ESEndpoint, req.ESIndex)
+		tenant, err := tenantStore.Create(req.Name, req.DomainID, req.DomainName, req.ESEndpoint, req.ESIndex, req.ESApiKey)
 		if err != nil {
 			log.Printf("ERROR: create tenant: %v", err)
 			writeJSONError(w, fmt.Sprintf("create tenant: %v", err), http.StatusInternalServerError)
@@ -1234,6 +1569,11 @@ func main() {
 		log.Fatalf("Failed to ensure tenants table: %v", err)
 	}
 	log.Printf("Tenants table ready")
+
+	// Migration: add es_api_key column if it doesn't exist
+	if _, err := db.Exec(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS es_api_key TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add es_api_key column: %v", err)
+	}
 
 	// Initialize tenant store
 	tenantStore = &TenantStore{DB: db}

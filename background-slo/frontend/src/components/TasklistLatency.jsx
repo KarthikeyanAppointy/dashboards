@@ -29,11 +29,7 @@ function getBarClass(avgMs, maxMs) {
   return "bar-low";
 }
 
-function TasklistLatency({
-  tasklists,
-  tasklistWindow,
-  onTasklistWindowChange,
-}) {
+function TasklistLatency({ tasklists, tasklistWindow }) {
   if (!tasklists || tasklists.length === 0) {
     return (
       <div className="tl-section">
@@ -66,21 +62,6 @@ function TasklistLatency({
           <span className="section-subtitle">
             Completed workflows ({currentLabel})
           </span>
-        </div>
-        <div className="section-header-right">
-          <label className="window-selector">
-            Window
-            <select
-              value={tasklistWindow}
-              onChange={(e) => onTasklistWindowChange(Number(e.target.value))}
-            >
-              {WINDOW_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </label>
         </div>
       </div>
       <div className="table-container">

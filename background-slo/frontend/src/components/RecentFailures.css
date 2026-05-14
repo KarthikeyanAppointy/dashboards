@@ -3,32 +3,10 @@
    ============================================= */
 
 .failures-section {
-    background: #fff;
+    background: var(--card);
     border-radius: 12px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    box-shadow: var(--shadow-md);
     overflow: hidden;
-}
-
-.failures-section .section-header {
-    padding: 18px 24px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    border-bottom: 1px solid #f0f0f0;
-    flex-wrap: wrap;
-    gap: 8px;
-}
-
-.failures-section .section-title {
-    font-size: 1rem;
-    font-weight: 700;
-    color: #37474f;
-}
-
-.section-header-right {
-    display: flex;
-    align-items: center;
-    gap: 12px;
 }
 
 .limit-selector {
@@ -36,31 +14,31 @@
     align-items: center;
     gap: 6px;
     font-size: 0.8rem;
-    color: #78909c;
+    color: var(--muted-foreground);
 }
 
 .limit-selector select {
     padding: 4px 8px;
-    border: 1px solid #ddd;
+    border: 1px solid var(--border);
     border-radius: 6px;
     font-size: 0.8rem;
     font-family: inherit;
-    background: #fff;
-    color: #333;
+    background: var(--card);
+    color: var(--foreground);
     cursor: pointer;
     outline: none;
 }
 
 .limit-selector select:focus {
-    border-color: #1565c0;
-    box-shadow: 0 0 0 2px rgba(21, 101, 192, 0.12);
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
 }
 
 .failure-count {
     font-size: 0.8rem;
-    color: #c62828;
+    color: var(--failure);
     font-weight: 600;
-    background: #ffebee;
+    background: var(--failure-bg);
     padding: 3px 12px;
     border-radius: 10px;
 }
@@ -75,7 +53,7 @@
 }
 
 .failures-table thead {
-    background: #f5f7fa;
+    background: var(--muted);
 }
 
 .failures-table th {
@@ -85,8 +63,8 @@
     font-size: 0.75rem;
     text-transform: uppercase;
     letter-spacing: 0.6px;
-    color: #78909c;
-    border-bottom: 2px solid #e0e0e0;
+    color: var(--muted-foreground);
+    border-bottom: 2px solid var(--border);
     white-space: nowrap;
 }
 
@@ -115,7 +93,7 @@
 }
 
 .failures-table tbody tr {
-    border-bottom: 1px solid #f5f5f5;
+    border-bottom: 1px solid var(--border);
     transition: background 0.15s ease;
 }
 
@@ -124,12 +102,12 @@
 }
 
 .failures-table tbody tr:hover {
-    background: #fff8f8;
+    background: var(--failure-bg);
 }
 
 .failures-table td {
     padding: 12px 16px;
-    color: #455a64;
+    color: var(--foreground);
     vertical-align: middle;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -149,10 +127,10 @@
 .cell-id code {
     font-family: "SF Mono", "Fira Code", "Consolas", monospace;
     font-size: 0.8rem;
-    background: #f5f5f5;
+    background: var(--muted);
     padding: 2px 8px;
     border-radius: 4px;
-    color: #37474f;
+    color: var(--foreground);
     display: block;
     overflow: visible;
     white-space: normal;
@@ -172,10 +150,10 @@
 .cell-tasklist code {
     font-family: "SF Mono", "Fira Code", "Consolas", monospace;
     font-size: 0.8rem;
-    background: #e8eaf6;
+    background: var(--muted);
     padding: 2px 8px;
     border-radius: 4px;
-    color: #283593;
+    color: var(--foreground);
     display: block;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -184,7 +162,7 @@
 
 .cell-time {
     font-size: 0.8rem;
-    color: #78909c;
+    color: var(--muted-foreground);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -202,18 +180,18 @@
 }
 
 .status-failed {
-    background: #ffebee;
-    color: #c62828;
+    background: var(--failure-bg);
+    color: var(--failure);
 }
 
 .status-timedout {
-    background: #fff3e0;
-    color: #e65100;
+    background: var(--warning-bg);
+    color: var(--warning);
 }
 
 .status-default {
-    background: #f5f5f5;
-    color: #616161;
+    background: var(--muted);
+    color: var(--muted-foreground);
 }
 
 /* =============================================
@@ -226,67 +204,8 @@
     align-items: flex-start;
     gap: 24px;
     flex-wrap: wrap;
-    background: #fafbfc;
-    border-bottom: 1px solid #f0f0f0;
-}
-
-.filter-group {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.filter-label {
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: #78909c;
-    margin-top: 6px;
-    white-space: nowrap;
-    min-width: 55px;
-}
-
-.filter-chips {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-}
-
-.filter-chip {
-    display: inline-flex;
-    align-items: center;
-    padding: 4px 14px;
-    border-radius: 14px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    border: 2px solid transparent;
-    cursor: pointer;
-    transition: all 0.15s ease;
-    font-family: inherit;
-    background: #f5f5f5;
-    color: #616161;
-}
-
-.filter-chip:hover {
-    opacity: 0.85;
-}
-
-.filter-chip.active.chip-failed {
-    background: #ffebee;
-    color: #c62828;
-    border-color: #ef9a9a;
-}
-
-.filter-chip.active.chip-timedout {
-    background: #fff3e0;
-    color: #e65100;
-    border-color: #ffcc80;
-}
-
-.filter-chip:not(.active) {
-    background: #f5f5f5;
-    color: #90a4ae;
-    border-color: #e0e0e0;
+    background: var(--muted);
+    border-bottom: 1px solid var(--border);
 }
 
 /* Tasklist multi-select */
@@ -297,12 +216,12 @@
 
 .tasklist-filter-select select {
     padding: 4px 8px;
-    border: 1px solid #ddd;
+    border: 1px solid var(--border);
     border-radius: 6px;
     font-size: 0.8rem;
     font-family: inherit;
-    background: #fff;
-    color: #333;
+    background: var(--card);
+    color: var(--foreground);
     cursor: pointer;
     outline: none;
     min-width: 180px;
@@ -310,8 +229,8 @@
 }
 
 .tasklist-filter-select select:focus {
-    border-color: #1565c0;
-    box-shadow: 0 0 0 2px rgba(21, 101, 192, 0.12);
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
 }
 
 .tasklist-filter-select select option {
@@ -334,8 +253,8 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    background: #e8eaf6;
-    border: 1px solid #c5cae9;
+    background: var(--muted);
+    border: 1px solid var(--border);
     border-radius: 4px;
     padding: 2px 6px;
     font-size: 0.75rem;
@@ -344,7 +263,7 @@
 .tasklist-tag code {
     font-family: "SF Mono", "Fira Code", "Consolas", monospace;
     font-size: 0.75rem;
-    color: #283593;
+    color: var(--foreground);
 }
 
 .tag-remove {
@@ -353,7 +272,7 @@
     justify-content: center;
     background: none;
     border: none;
-    color: #7986cb;
+    color: var(--muted-foreground);
     cursor: pointer;
     font-size: 0.9rem;
     line-height: 1;
@@ -364,13 +283,13 @@
 }
 
 .tag-remove:hover {
-    color: #c62828;
+    color: var(--failure);
 }
 
 .tag-clear-all {
     background: none;
     border: none;
-    color: #1565c0;
+    color: var(--primary);
     cursor: pointer;
     font-size: 0.75rem;
     font-weight: 600;
@@ -381,7 +300,7 @@
 }
 
 .tag-clear-all:hover {
-    background: #e3f2fd;
+    background: var(--info-bg);
 }
 
 /* No matches cell */
@@ -389,7 +308,7 @@
 .no-matches-cell {
     text-align: center !important;
     padding: 32px 16px !important;
-    color: #90a4ae !important;
+    color: var(--muted-foreground) !important;
     font-size: 0.9rem !important;
 }
 
@@ -398,12 +317,12 @@
 .failures-empty {
     padding: 48px 24px;
     text-align: center;
-    color: #90a4ae;
+    color: var(--muted-foreground);
 }
 
 .empty-icon {
     font-size: 2.5rem;
-    color: #66bb6a;
+    color: var(--success);
     display: block;
     margin-bottom: 8px;
 }
@@ -445,20 +364,20 @@
 
 .date-time-input {
     padding: 4px 8px;
-    border: 1px solid #ddd;
+    border: 1px solid var(--border);
     border-radius: 6px;
     font-size: 0.8rem;
     font-family: inherit;
-    background: #fff;
-    color: #333;
+    background: var(--card);
+    color: var(--foreground);
     cursor: pointer;
     outline: none;
     min-width: 170px;
 }
 
 .date-time-input:focus {
-    border-color: #1565c0;
-    box-shadow: 0 0 0 2px rgba(21, 101, 192, 0.12);
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
 }
 
 /* =============================================
@@ -475,21 +394,21 @@
     display: inline-flex;
     align-items: center;
     padding: 4px 12px;
-    border: 1px solid #ddd;
+    border: 1px solid var(--border);
     border-radius: 6px;
     font-size: 0.78rem;
     font-weight: 600;
     font-family: inherit;
-    background: #fff;
-    color: #37474f;
+    background: var(--card);
+    color: var(--foreground);
     cursor: pointer;
     transition: all 0.15s ease;
 }
 
 .pagination-btn:hover:not(:disabled) {
-    background: #e3f2fd;
-    border-color: #1565c0;
-    color: #1565c0;
+    background: var(--info-bg);
+    border-color: var(--primary);
+    color: var(--primary);
 }
 
 .pagination-btn:disabled {
@@ -499,7 +418,7 @@
 
 .pagination-info {
     font-size: 0.78rem;
-    color: #78909c;
+    color: var(--muted-foreground);
     font-weight: 600;
     padding: 0 4px;
     white-space: nowrap;

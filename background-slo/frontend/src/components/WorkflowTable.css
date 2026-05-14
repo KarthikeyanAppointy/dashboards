@@ -3,40 +3,10 @@
    ============================================= */
 
 .workflow-section {
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  overflow: hidden;
-}
-
-.section-header {
-  padding: 18px 24px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid #f0f0f0;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.section-title {
-  font-size: 1rem;
-  font-weight: 700;
-  color: #37474f;
-}
-
-.section-subtitle {
-  font-size: 0.8rem;
-  color: #90a4ae;
-}
-
-/* =============================================
-   Table Container
-   ============================================= */
-
-.table-container {
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
+    background: var(--card);
+    border-radius: 12px;
+    box-shadow: var(--shadow-md);
+    overflow: hidden;
 }
 
 /* =============================================
@@ -44,162 +14,113 @@
    ============================================= */
 
 .workflow-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85rem;
-  min-width: 800px;
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    min-width: 800px;
 }
 
 .workflow-table thead {
-  background: #f5f7fa;
+    background: var(--muted);
 }
 
 .workflow-table th {
-  padding: 10px 12px;
-  text-align: center;
-  font-weight: 700;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: #78909c;
-  border-bottom: 2px solid #e0e0e0;
-  white-space: nowrap;
+    padding: 10px 12px;
+    text-align: center;
+    font-weight: 700;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--muted-foreground);
+    border-bottom: 2px solid var(--border);
+    white-space: nowrap;
 }
 
 .workflow-table th.col-window {
-  text-align: left;
-  padding-left: 20px;
-  width: 140px;
+    text-align: left;
+    padding-left: 20px;
+    width: 140px;
 }
 
 .workflow-table th.col-counts,
 .workflow-table th.col-rates {
-  color: #546e7a;
-  font-size: 0.7rem;
-  border-bottom: 1px solid #e0e0e0;
+    color: var(--muted-foreground);
+    font-size: 0.7rem;
+    border-bottom: 1px solid var(--border);
 }
 
 .workflow-table th.col-data {
-  min-width: 85px;
+    min-width: 85px;
 }
 
 .workflow-table tbody tr {
-  border-bottom: 1px solid #f0f0f0;
-  transition: background 0.15s ease;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.15s ease;
 }
 
 .workflow-table tbody tr:last-child {
-  border-bottom: none;
+    border-bottom: none;
 }
 
 .workflow-table tbody tr:hover {
-  background: #f8f9ff;
+    background: var(--accent);
 }
 
 .workflow-table td {
-  padding: 12px;
-  text-align: center;
-  vertical-align: middle;
+    padding: 12px;
+    text-align: center;
+    vertical-align: middle;
 }
 
 /* Time Window Cell */
 
 .cell-window {
-  text-align: left;
-  padding-left: 20px !important;
-  white-space: nowrap;
+    text-align: left;
+    padding-left: 20px !important;
+    white-space: nowrap;
 }
 
 .window-label {
-  font-weight: 600;
-  color: #37474f;
-  display: block;
-  font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--foreground);
+    display: block;
+    font-size: 0.85rem;
 }
 
 .window-seconds {
-  font-size: 0.7rem;
-  color: #90a4ae;
+    font-size: 0.7rem;
+    color: var(--muted-foreground);
 }
 
 /* Data Cells */
 
 .cell-data {
-  vertical-align: middle;
+    vertical-align: middle;
 }
 
 .cell-rate {
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  font-size: 0.8rem;
-  color: #546e7a;
-}
-
-/* =============================================
-   Status Badges
-   ============================================= */
-
-.badge {
-  display: inline-block;
-  padding: 3px 10px;
-  border-radius: 10px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-  min-width: 36px;
-}
-
-.badge-success {
-  background: #e8f5e9;
-  color: #2e7d32;
-}
-
-.badge-danger {
-  background: #ffebee;
-  color: #c62828;
-}
-
-.badge-warning {
-  background: #fff3e0;
-  color: #e65100;
-}
-
-.badge-info {
-  background: #e3f2fd;
-  color: #1565c0;
-}
-
-.badge-primary {
-  background: #e8eaf6;
-  color: #283593;
-}
-
-.badge-secondary {
-  background: #f5f5f5;
-  color: #616161;
-}
-
-.badge-default {
-  background: #eceff1;
-  color: #546e7a;
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 0.8rem;
+    color: var(--muted-foreground);
 }
 
 /* Responsive */
 
 @media (max-width: 768px) {
-  .section-header {
-    padding: 14px 16px;
-  }
+    .section-header {
+        padding: 14px 16px;
+    }
 
-  .workflow-table {
-    font-size: 0.8rem;
-  }
+    .workflow-table {
+        font-size: 0.8rem;
+    }
 
-  .workflow-table th,
-  .workflow-table td {
-    padding: 8px 8px;
-  }
+    .workflow-table th,
+    .workflow-table td {
+        padding: 8px 8px;
+    }
 
-  .cell-window {
-    padding-left: 12px !important;
-  }
+    .cell-window {
+        padding-left: 12px !important;
+    }
 }

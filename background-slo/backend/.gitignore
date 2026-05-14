@@ -1,0 +1,35 @@
+# === Go ===
+
+# Compiled binary (local `go build .` produces the module name)
+slo_dashboard
+
+# Docker build output
+server
+
+# Dependency directory (if vendoring is used)
+vendor/
+
+# === Environment ===
+
+.env
+.env.local
+.env.*.local
+
+# === IDE & Editor ===
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === OS ===
+
+.DS_Store
+Thumbs.db
+
+# === Misc ===
+
+*.out
+*.test
+*.test.exe

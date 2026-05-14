@@ -1,0 +1,241 @@
+/* =============================================
+   Activity Errors Section
+   ============================================= */
+
+.activity-errors-section {
+    background: var(--card);
+    border-radius: 12px;
+    box-shadow: var(--shadow-md);
+    overflow: hidden;
+}
+
+.error-count {
+    font-size: 0.8rem;
+    color: var(--warning);
+    font-weight: 600;
+    background: var(--warning-bg);
+    padding: 3px 12px;
+    border-radius: 10px;
+}
+
+/* =============================================
+   Activity Errors Status Filter
+   ============================================= */
+
+.activity-errors-filters {
+    padding: 12px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--muted);
+}
+
+.activity-errors-filters .filter-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.activity-errors-filters .filter-label {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--muted-foreground);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    min-width: 48px;
+}
+
+.activity-errors-filters .filter-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.activity-errors-filters .filter-chip {
+    padding: 4px 12px;
+    border-radius: 14px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    border: 1.5px solid var(--border);
+    background: var(--card);
+    color: var(--muted-foreground);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+}
+
+.activity-errors-filters .filter-chip:hover {
+    border-color: var(--muted-foreground);
+    background: var(--muted);
+}
+
+.activity-errors-filters .filter-chip.active {
+    border-color: var(--primary);
+    background: var(--info-bg);
+    color: var(--primary);
+}
+
+.activity-errors-filters .filter-chip.chip-clear {
+    border-color: var(--failure);
+    color: var(--failure);
+    background: var(--card);
+}
+
+.activity-errors-filters .filter-chip.chip-clear:hover {
+    background: var(--failure-bg);
+    border-color: var(--failure);
+    color: var(--failure);
+}
+
+.error-field-input {
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 0.78rem;
+    padding: 5px 10px;
+    border: 1.5px solid var(--border);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--foreground);
+    outline: none;
+    transition: border-color 0.15s ease;
+    min-width: 250px;
+}
+
+.error-field-input:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+
+.error-field-input::placeholder {
+    color: var(--muted-foreground);
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+}
+
+/* =============================================
+   Activity Errors Table
+   ============================================= */
+
+.activity-errors-body {
+    padding: 0;
+}
+
+.activity-errors-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+.activity-errors-table thead {
+    background: var(--muted);
+}
+
+.activity-errors-table th {
+    padding: 10px 24px;
+    text-align: left;
+    font-weight: 700;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--muted-foreground);
+    border-bottom: 2px solid var(--border);
+    white-space: nowrap;
+}
+
+.activity-errors-table th.col-count {
+    text-align: right;
+    padding-right: 24px;
+    width: 100px;
+}
+
+.activity-errors-table th.col-workflow-type {
+    min-width: 180px;
+}
+
+.activity-errors-table th.col-error {
+    min-width: 200px;
+}
+
+.activity-errors-table td {
+    padding: 12px 24px;
+    color: var(--foreground);
+    vertical-align: middle;
+    border-bottom: 1px solid var(--border);
+}
+
+.activity-errors-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.activity-errors-table tbody tr:hover {
+    background: var(--warning-bg);
+}
+
+/* Workflow Type Cell - with text wrapping */
+.workflow-type-cell {
+    max-width: 0;
+}
+
+.workflow-type-code {
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 0.8rem;
+    background: var(--warning-bg);
+    padding: 2px 8px;
+    border-radius: 4px;
+    color: var(--warning);
+    display: inline-block;
+    word-break: break-word;
+    white-space: normal;
+    max-width: 100%;
+    line-height: 1.4;
+}
+
+/* Error Cell */
+.error-cell {
+    max-width: 0;
+}
+
+.error-detail-code {
+    font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+    font-size: 0.78rem;
+    background: var(--failure-bg);
+    padding: 2px 8px;
+    border-radius: 4px;
+    color: var(--failure);
+    display: inline-block;
+    word-break: break-word;
+    white-space: normal;
+    max-width: 100%;
+    line-height: 1.4;
+}
+
+.error-count-cell {
+    text-align: right;
+}
+
+.count-badge {
+    display: inline-block;
+    padding: 3px 12px;
+    border-radius: 10px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--failure);
+    background: var(--failure-bg);
+}
+
+/* Empty state */
+.activity-errors-body .empty-state {
+    padding: 40px 24px;
+    text-align: center;
+    color: var(--muted-foreground);
+}
+
+.activity-errors-body .empty-state .empty-icon {
+    font-size: 2rem;
+    display: block;
+    margin-bottom: 12px;
+}
+
+.activity-errors-body .empty-state p {
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 500;
+}
