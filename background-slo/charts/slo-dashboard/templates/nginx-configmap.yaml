@@ -11,6 +11,7 @@ data:
         worker_connections 1024;
     }
     http {
+        include /etc/nginx/mime.types;
         access_log off;
         proxy_temp_path /tmp;
         client_body_temp_path /tmp;
@@ -37,10 +38,11 @@ data:
                 proxy_set_header Host $host;
             }
 
-            # Serve static frontend files directly
-            location /assets/ {
+            # Static files (js, css, images, fonts) with long-term caching
+            location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
                 expires 1y;
                 add_header Cache-Control "public, immutable";
+                try_files $uri =404;
             }
 
             # Everything else: serve index.html (SPA routing)
