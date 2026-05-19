@@ -19,12 +19,33 @@ data:
         scgi_temp_path /tmp;
         server {
             listen 80;
-            location / {
+            root /usr/share/nginx/html;
+            index index.html;
+
+            # Proxy API requests to the backend
+            location /api/ {
                 proxy_pass http://{{ include "slo-dashboard.backendServiceName" . }}:8080;
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                 proxy_set_header X-Forwarded-Proto $scheme;
+            }
+
+            # Health check endpoint
+            location /health {
+                proxy_pass http://{{ include "slo-dashboard.backendServiceName" . }}:8080;
+                proxy_set_header Host $host;
+            }
+
+            # Serve static frontend files directly
+            location /assets/ {
+                expires 1y;
+                add_header Cache-Control "public, immutable";
+            }
+
+            # Everything else: serve index.html (SPA routing)
+            location / {
+                try_files $uri $uri/ /index.html;
             }
         }
     }
