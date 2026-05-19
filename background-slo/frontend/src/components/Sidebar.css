@@ -68,7 +68,9 @@
     color: var(--sidebar-fg);
     font-size: 13px;
     font-weight: 500;
-    transition: background 0.12s ease, color 0.12s ease;
+    transition:
+        background 0.12s ease,
+        color 0.12s ease;
     white-space: nowrap;
     overflow: hidden;
 }
@@ -151,12 +153,42 @@
     background: var(--surface);
     color: var(--fg-secondary);
     cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease;
+    transition:
+        background 0.12s ease,
+        color 0.12s ease;
 }
 
 .sidebar-collapse-btn:hover {
     background: var(--surface-secondary);
     color: var(--fg);
+}
+
+/* ─── Sections ─────────────────────────────────────────────── */
+.sidebar-section {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.sidebar-section + .sidebar-section {
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--separator);
+}
+
+.sidebar-section-label {
+    display: block;
+    padding: 6px 10px 4px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-tertiary);
+    user-select: none;
+}
+
+.collapsed .sidebar-section-label {
+    display: none;
 }
 
 @media (max-width: 1000px) {

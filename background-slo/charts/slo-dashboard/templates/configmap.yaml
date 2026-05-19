@@ -13,3 +13,8 @@ data:
   DEFAULT_ES: {{ .Values.configmap.DEFAULT_ES | default "http://localhost:9000" | quote }}
   DEFAULT_INDEX: {{ .Values.configmap.DEFAULT_INDEX | default "cadence-visibility" | quote }}
   GOOGLE_CLIENT_ID: {{ .Values.configmap.GOOGLE_CLIENT_ID | default "" | quote }}
+  APPONTY_ONLY_LOGIN: {{ .Values.configmap.APPONTY_ONLY_LOGIN | default "true" | quote }}
+  AWS_REGION: {{ .Values.configmap.AWS_REGION | default "" | quote }}
+  SES_REGIONS: {{ .Values.configmap.SES_REGIONS | default "" | quote }}
+  SES_CONFIG_SET_NAME: {{ .Values.configmap.SES_CONFIG_SET_NAME | default "" | quote }}
+  SES_DOMAIN_NAME: {{ .Values.configmap.SES_DOMAIN_NAME | default "ses" | quote }}

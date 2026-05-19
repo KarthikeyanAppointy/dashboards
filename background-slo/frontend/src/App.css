@@ -43,7 +43,8 @@
     --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
     --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.06);
-    --shadow-dropdown: 0 4px 20px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.08);
+    --shadow-dropdown:
+        0 4px 20px rgba(0, 0, 0, 0.12), 0 1px 4px rgba(0, 0, 0, 0.08);
 
     --radius-xs: 4px;
     --radius-sm: 6px;
@@ -98,22 +99,28 @@
     --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.25), 0 1px 2px rgba(0, 0, 0, 0.2);
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.2);
     --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.25);
-    --shadow-dropdown: 0 4px 24px rgba(0, 0, 0, 0.5), 0 1px 6px rgba(0, 0, 0, 0.3);
+    --shadow-dropdown:
+        0 4px 24px rgba(0, 0, 0, 0.5), 0 1px 6px rgba(0, 0, 0, 0.3);
 }
 
 /* ─── Reset ──────────────────────────────────────────────────── */
-*, *::before, *::after {
+*,
+*::before,
+*::after {
     box-sizing: border-box;
     margin: 0;
     padding: 0;
 }
 
-html, body {
+html,
+body {
     height: 100%;
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    font-family:
+        -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
+        Arial, sans-serif;
     font-size: 13px;
     line-height: 1.5;
     background: var(--bg);
@@ -123,7 +130,10 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
-button, input, select, textarea {
+button,
+input,
+select,
+textarea {
     font: inherit;
 }
 
@@ -183,7 +193,9 @@ button {
 }
 
 .topbar-title {
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+    font-family:
+        -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue",
+        Arial, sans-serif;
     font-size: 15px;
     font-weight: 600;
     letter-spacing: -0.018em;
@@ -222,7 +234,10 @@ button {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    transition:
+        background 0.15s ease,
+        color 0.15s ease,
+        border-color 0.15s ease;
     white-space: nowrap;
 }
 
@@ -323,7 +338,9 @@ button {
     background: var(--surface);
     color: var(--fg-secondary);
     cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
+    transition:
+        background 0.15s ease,
+        color 0.15s ease;
     flex-shrink: 0;
 }
 
@@ -538,12 +555,14 @@ button {
     color: var(--warning-fg);
 }
 
-.badge-info, .badge-primary {
+.badge-info,
+.badge-primary {
     background: var(--info-bg);
     color: var(--info-fg);
 }
 
-.badge-secondary, .badge-default {
+.badge-secondary,
+.badge-default {
     background: var(--surface-secondary);
     color: var(--fg-tertiary);
 }
@@ -561,7 +580,10 @@ button {
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    transition:
+        background 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease;
     white-space: nowrap;
 }
 
@@ -660,15 +682,63 @@ button {
 }
 
 /* ─── Hidden legacy classes ──────────────────────────────────── */
-.loading-indicator, .last-updated, .header-domain, .app,
-.app-header, .header-left, .header-right, .header-title,
-.header-logo, .app-layout {
+.loading-indicator,
+.last-updated,
+.header-domain,
+.app,
+.app-header,
+.header-left,
+.header-right,
+.header-title,
+.header-logo,
+.app-layout {
     display: none;
+}
+
+/* ─── Snackbar Toast ─────────────────────────────────────────── */
+.snackbar {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(80px);
+    padding: 12px 24px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 500;
+    color: #fff;
+    background: #323232;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    z-index: 9999;
+    opacity: 0;
+    transition:
+        opacity 0.25s ease,
+        transform 0.25s ease;
+    pointer-events: none;
+    white-space: nowrap;
+    max-width: 90vw;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.snackbar.snackbar-visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+    pointer-events: auto;
+}
+
+.snackbar.snackbar-success {
+    background: #323232;
+}
+
+.snackbar.snackbar-error {
+    background: #d32f2f;
 }
 
 /* ─── Animations ─────────────────────────────────────────────── */
 @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 /* ─── Responsive ─────────────────────────────────────────────── */
@@ -688,5 +758,4 @@ button {
         flex-wrap: wrap;
         gap: 8px;
     }
-
 }

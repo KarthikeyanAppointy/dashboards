@@ -13,7 +13,10 @@ function formatLatency(ms) {
 const SortIcon = ({ field, sortKey, sortDir }) => {
   const active = sortKey === field;
   return (
-    <span className={`sort-icon${active ? " sort-active" : ""}`} aria-hidden="true">
+    <span
+      className={`sort-icon${active ? " sort-active" : ""}`}
+      aria-hidden="true"
+    >
       <svg width="10" height="12" viewBox="0 0 10 12" fill="none">
         <path
           d="M5 1L5 11M5 1L2 4M5 1L8 4"
@@ -36,6 +39,11 @@ const SortIcon = ({ field, sortKey, sortDir }) => {
   );
 };
 
+function formatCount(n) {
+  if (n === 0 || n === null || n === undefined) return "0";
+  return n.toLocaleString();
+}
+
 function P100LatencyByWorkflow({ data }) {
   const [sortKey, setSortKey] = useState("p100_latency_ms");
   const [sortDir, setSortDir] = useState("desc");
@@ -57,6 +65,8 @@ function P100LatencyByWorkflow({ data }) {
     return sortDir === "desc" ? bVal - aVal : aVal - bVal;
   });
 
+  const maxLatency = Math.max(...data.map((d) => d.p100_latency_ms || 0));
+
   return (
     <div className="p100-by-workflow-section">
       <div className="section-header">
@@ -69,16 +79,55 @@ function P100LatencyByWorkflow({ data }) {
             <tr>
               <th className="col-p100-workflow-type">Workflow Type</th>
               <th
-                className={`col-p100-count sortable${sortKey === "count" ? " sort-active" : ""}`}
+                className={`col-p100-total sortable${sortKey === "count" ? " sort-active" : ""}`}
                 onClick={() => handleSort("count")}
               >
-                Count <SortIcon field="count" sortKey={sortKey} sortDir={sortDir} />
+                Total{" "}
+                <SortIcon field="count" sortKey={sortKey} sortDir={sortDir} />
+              </th>
+              <th
+                className={`col-p100-succeeded sortable${sortKey === "success_count" ? " sort-active" : ""}`}
+                onClick={() => handleSort("success_count")}
+              >
+                Succeeded{" "}
+                <SortIcon
+                  field="success_count"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                />
+              </th>
+              <th
+                className={`col-p100-failed-header sortable${sortKey === "failure_count" ? " sort-active" : ""}`}
+                onClick={() => handleSort("failure_count")}
+              >
+                Failed{" "}
+                <SortIcon
+                  field="failure_count"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                />
+              </th>
+              <th
+                className={`col-p100-open-header sortable${sortKey === "open_count" ? " sort-active" : ""}`}
+                onClick={() => handleSort("open_count")}
+              >
+                Open{" "}
+                <SortIcon
+                  field="open_count"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                />
               </th>
               <th
                 className={`col-p100-latency sortable${sortKey === "p100_latency_ms" ? " sort-active" : ""}`}
                 onClick={() => handleSort("p100_latency_ms")}
               >
-                P100 Latency <SortIcon field="p100_latency_ms" sortKey={sortKey} sortDir={sortDir} />
+                P100 Latency{" "}
+                <SortIcon
+                  field="p100_latency_ms"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                />
               </th>
             </tr>
           </thead>
@@ -90,15 +139,44 @@ function P100LatencyByWorkflow({ data }) {
                     {entry.workflow_type}
                   </code>
                 </td>
-                <td className="p100-count-cell">
-                  <span className="p100-count-badge">
-                    {entry.count.toLocaleString()}
+                <td className="p100-total-cell">
+                  <span className="p100-total-value">
+                    {formatCount(entry.count)}
+                  </span>
+                </td>
+                <td className="p100-succeeded-cell">
+                  <span className="p100-succeeded-value">
+                    {formatCount(entry.success_count)}
+                  </span>
+                  <span className="p100-rate-label">
+                    {((entry.success_rate ?? 0) || 0).toFixed(1)}%
+                  </span>
+                </td>
+                <td className="p100-failed-cell">
+                  <span className="p100-failed-value">
+                    {formatCount(entry.failure_count)}
+                  </span>
+                  <span className="p100-rate-label p100-rate-label-fail">
+                    {((entry.failure_rate ?? 0) || 0).toFixed(1)}%
+                  </span>
+                </td>
+                <td className="p100-open-cell">
+                  <span className="p100-open-value">
+                    {formatCount(entry.open_count)}
                   </span>
                 </td>
                 <td className="p100-latency-cell">
-                  <span className="p100-latency-value">
-                    {formatLatency(entry.p100_latency_ms)}
-                  </span>
+                  <div className="p100-latency-bar-wrap">
+                    <span className="p100-latency-value">
+                      {formatLatency(entry.p100_latency_ms)}
+                    </span>
+                    <span
+                      className="p100-latency-bar"
+                      style={{
+                        width: `${maxLatency > 0 ? (entry.p100_latency_ms / maxLatency) * 100 : 0}%`,
+                      }}
+                    />
+                  </div>
                 </td>
               </tr>
             ))}

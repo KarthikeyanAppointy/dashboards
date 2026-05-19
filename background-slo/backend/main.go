@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -19,9 +21,10 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 // ============================================================
@@ -30,11 +33,12 @@ import (
 
 // Config holds the per-tenant configuration needed for ES queries.
 type Config struct {
-	ES         string
-	Index      string
-	DomainID   string
-	DomainName string
-	ESApiKey   string
+	ES          string
+	Index       string
+	DomainID    string
+	DomainName  string
+	ESApiKey    string
+	AudienceURL string
 }
 
 func getEnv(key, fallback string) string {
@@ -50,15 +54,306 @@ func getEnv(key, fallback string) string {
 
 // Tenant represents a single tenant in the multi-tenant system.
 type Tenant struct {
+	ID              int       `json:"id"`
+	Name            string    `json:"name"`
+	DomainID        string    `json:"domain_id"`
+	DomainName      string    `json:"domain_name"`
+	ESEndpoint      string    `json:"es_endpoint"`
+	ESIndex         string    `json:"es_index"`
+	ESApiKey        string    `json:"es_api_key"`
+	AudienceURL     string    `json:"audience_url"`
+	NotifyHubURL    string    `json:"notifyhub_url"`
+	NotifyHubAPIKey string    `json:"notifyhub_api_key"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// AlertRule represents a single alert rule for a tenant.
+type AlertRule struct {
+	ID                  int        `json:"id"`
+	TenantID            int        `json:"tenant_id"`
+	Name                string     `json:"name"`
+	Enabled             bool       `json:"enabled"`
+	MetricType          string     `json:"metric_type"`
+	ConditionType       string     `json:"condition_type"`
+	Threshold           float64    `json:"threshold"`
+	WindowSeconds       int        `json:"window_seconds"`
+	NotificationChannel string     `json:"notification_channel"`
+	NotificationTarget  string     `json:"notification_target"`
+	NotifyHubTemplateID string     `json:"notifyhub_template_id"`
+	SESRegion           string     `json:"ses_region"`
+	TileID              string     `json:"tile_id"`
+	AlertType           string     `json:"alert_type"`
+	MessageTemplate     string     `json:"message_template"`
+	LastTriggeredAt     *time.Time `json:"last_triggered_at"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+}
+
+// CodefacPipeline stores a codefac pipeline configuration for a tenant.
+type CodefacPipeline struct {
+	ID              int        `json:"id"`
+	TenantID        int        `json:"tenant_id"`
+	Name            string     `json:"name"`
+	PipelineName    string     `json:"pipeline_name"` // Codefac pipeline name configured in NotifyHub App Store
+	MetricType      string     `json:"metric_type"`
+	ConditionType   string     `json:"condition_type"`
+	Threshold       float64    `json:"threshold"`
+	PayloadTemplate string     `json:"payload_template"`
+	Enabled         bool       `json:"enabled"`
+	LastTriggeredAt *time.Time `json:"last_triggered_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+// NotificationChannel stores per-channel recipient configuration for a tenant.
+type NotificationChannel struct {
 	ID         int       `json:"id"`
-	Name       string    `json:"name"`
-	DomainID   string    `json:"domain_id"`
-	DomainName string    `json:"domain_name"`
-	ESEndpoint string    `json:"es_endpoint"`
-	ESIndex    string    `json:"es_index"`
-	ESApiKey   string    `json:"es_api_key"`
+	TenantID   int       `json:"tenant_id"`
+	Channel    string    `json:"channel"`    // "email", "sms", "slack"
+	Scope      string    `json:"scope"`      // "alert" or "report"
+	Recipients []string  `json:"recipients"` // email addresses, phone numbers, slack channel names
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// RBACEntry stores permissions for a user on a tenant.
+type RBACEntry struct {
+	ID        int    `json:"id"`
+	UserEmail string `json:"user_email"`
+	TenantID  int    `json:"tenant_id"`
+	Role      string `json:"role"` // "admin" or "user"
+	// Permissions is a JSON array of sidebar sections the user can access.
+	// Example: ["overview","failures","ses","notifications"]
+	Permissions  []string   `json:"permissions"`
+	LastActivity *time.Time `json:"last_activity"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+}
+
+type Report struct {
+	ID              int        `json:"id"`
+	TenantID        int        `json:"tenant_id"`
+	Name            string     `json:"name"`
+	Enabled         bool       `json:"enabled"`
+	ReportType      string     `json:"report_type"`
+	Frequency       string     `json:"frequency"`
+	DayOfWeek       int        `json:"day_of_week"`
+	DayOfMonth      int        `json:"day_of_month"`
+	Channel         string     `json:"channel"`
+	Recipients      []string   `json:"recipients"`
+	SendTime        string     `json:"send_time"`
+	Timezone        string     `json:"timezone"`
+	MessageTemplate string     `json:"message_template"`
+	Regions         []string   `json:"regions"`
+	ClientName      string     `json:"client_name"`
+	WorkflowTopN    int        `json:"workflow_top_n"`
+	LastSentAt      *time.Time `json:"last_sent_at"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+type AlertHistory struct {
+	ID            int       `json:"id"`
+	TenantID      int       `json:"tenant_id"`
+	AlertRuleID   *int      `json:"alert_rule_id"`
+	TileID        string    `json:"tile_id"`
+	MetricType    string    `json:"metric_type"`
+	MetricValue   float64   `json:"metric_value"`
+	Threshold     float64   `json:"threshold"`
+	ConditionType string    `json:"condition_type"`
+	Channel       string    `json:"channel"`
+	Recipient     string    `json:"recipient"`
+	Status        string    `json:"status"`
+	ErrorMessage  string    `json:"error_message"`
+	WorkflowID    string    `json:"workflow_id"`
+	RunID         string    `json:"run_id"`
+	SentAt        time.Time `json:"sent_at"`
+	CreatedAt     time.Time `json:"created_at"`
+}
+
+// newUUIDv4 generates a UUID v4 string using crypto/rand.
+func newUUIDv4() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback - extremely unlikely
+		return fmt.Sprintf("%x-%x-%x-%x-%x", time.Now().UnixNano(), time.Now().UnixNano()>>32, time.Now().UnixNano()>>16, time.Now().UnixNano(), time.Now().UnixNano())
+	}
+	// Set version 4
+	b[6] = (b[6] & 0x0f) | 0x40
+	// Set variant bits (RFC 4122)
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// EnsureAlertsTable creates the alert_rules table if it doesn't exist.
+func EnsureAlertsTable(db *sql.DB) error {
+	query := `
+	CREATE TABLE IF NOT EXISTS alert_rules (
+		id SERIAL PRIMARY KEY,
+		tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		enabled BOOLEAN NOT NULL DEFAULT true,
+		metric_type TEXT NOT NULL,
+		condition_type TEXT NOT NULL,
+		threshold DOUBLE PRECISION NOT NULL,
+		window_seconds INTEGER NOT NULL DEFAULT 3600,
+		notification_channel TEXT NOT NULL DEFAULT 'email',
+		notification_target TEXT NOT NULL DEFAULT '',
+		notifyhub_template_id TEXT NOT NULL DEFAULT '',
+		last_triggered_at TIMESTAMPTZ,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);`
+	_, err := db.Exec(query)
+	if err != nil {
+		return fmt.Errorf("create alert_rules table: %w", err)
+	}
+
+	// Ensure columns added in later migrations
+	if _, err := db.Exec(`ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS message_template TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add message_template column: %v", err)
+	}
+
+	return nil
+}
+
+func EnsureCodefacPipelinesTable(db *sql.DB) error {
+	query := `
+	CREATE TABLE IF NOT EXISTS codefac_pipelines (
+		id SERIAL PRIMARY KEY,
+		tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		pipeline_name TEXT NOT NULL,
+		metric_type TEXT NOT NULL,
+		condition_type TEXT NOT NULL,
+		threshold DOUBLE PRECISION NOT NULL,
+		payload_template TEXT NOT NULL DEFAULT '{}',
+		enabled BOOLEAN NOT NULL DEFAULT true,
+				last_triggered_at TIMESTAMPTZ,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);`
+	_, err := db.Exec(query)
+	if err != nil {
+		return fmt.Errorf("create codefac_pipelines table: %w", err)
+	}
+	return nil
+}
+
+func EnsureNotificationChannelsTable(db *sql.DB) error {
+	query := `
+	CREATE TABLE IF NOT EXISTS notification_channels (
+		id SERIAL PRIMARY KEY,
+		tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		channel TEXT NOT NULL,
+		scope TEXT NOT NULL DEFAULT 'alert',
+		recipients TEXT[] NOT NULL DEFAULT '{}',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		UNIQUE(tenant_id, channel, scope)
+	);`
+	_, err := db.Exec(query)
+	if err != nil {
+		return fmt.Errorf("create notification_channels table: %w", err)
+	}
+	return nil
+}
+
+func EnsureReportsTable(db *sql.DB) error {
+	query := `
+	CREATE TABLE IF NOT EXISTS reports (
+		id SERIAL PRIMARY KEY,
+		tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		enabled BOOLEAN NOT NULL DEFAULT true,
+		report_type TEXT NOT NULL DEFAULT 'slo_summary',
+		frequency TEXT NOT NULL DEFAULT 'daily',
+		day_of_week INTEGER NOT NULL DEFAULT 0,
+		day_of_month INTEGER NOT NULL DEFAULT 1,
+		channel TEXT NOT NULL DEFAULT 'email',
+		recipients TEXT[] NOT NULL DEFAULT '{}',
+		send_time TEXT NOT NULL DEFAULT '08:00',
+		timezone TEXT NOT NULL DEFAULT 'UTC',
+		last_sent_at TIMESTAMPTZ,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);`
+	_, err := db.Exec(query)
+	if err != nil {
+		return fmt.Errorf("create reports table: %w", err)
+	}
+
+	if _, err := db.Exec(`ALTER TABLE reports ADD COLUMN IF NOT EXISTS message_template TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add message_template column: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE reports ADD COLUMN IF NOT EXISTS regions TEXT[] NOT NULL DEFAULT '{}'`); err != nil {
+		log.Printf("WARN: could not add regions column: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE reports ADD COLUMN IF NOT EXISTS client_name TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add client_name column: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE reports ADD COLUMN IF NOT EXISTS workflow_top_n INTEGER NOT NULL DEFAULT 10`); err != nil {
+		log.Printf("WARN: could not add workflow_top_n column: %v", err)
+	}
+	return nil
+}
+
+func EnsureAlertHistoryTable(db *sql.DB) error {
+	query := `
+	CREATE TABLE IF NOT EXISTS alert_history (
+		id SERIAL PRIMARY KEY,
+		tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		alert_rule_id INTEGER REFERENCES alert_rules(id) ON DELETE SET NULL,
+		tile_id TEXT NOT NULL DEFAULT '',
+		metric_type TEXT NOT NULL DEFAULT '',
+		metric_value DOUBLE PRECISION DEFAULT 0,
+		threshold DOUBLE PRECISION DEFAULT 0,
+		condition_type TEXT NOT NULL DEFAULT '',
+		channel TEXT NOT NULL DEFAULT '',
+		recipient TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'sent',
+		error_message TEXT NOT NULL DEFAULT '',
+		sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);`
+	_, err := db.Exec(query)
+	if err != nil {
+		return fmt.Errorf("create alert_history table: %w", err)
+	}
+
+	// Ensure columns added in later migrations
+	if _, err := db.Exec(`ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS workflow_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add workflow_id column: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE alert_history ADD COLUMN IF NOT EXISTS run_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add run_id column: %v", err)
+	}
+
+	return nil
+}
+
+func EnsureRBACTable(db *sql.DB) error {
+	query := `
+	CREATE TABLE IF NOT EXISTS rbac (
+		id SERIAL PRIMARY KEY,
+		user_email TEXT NOT NULL,
+		tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		role TEXT NOT NULL DEFAULT 'user',
+		permissions TEXT[] NOT NULL DEFAULT '{}',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		UNIQUE(user_email, tenant_id)
+	);`
+	_, err := db.Exec(query)
+	if err != nil {
+		return fmt.Errorf("create rbac table: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE rbac ADD COLUMN IF NOT EXISTS last_activity TIMESTAMPTZ`); err != nil {
+		log.Printf("WARN: could not add last_activity column: %v", err)
+	}
+	return nil
 }
 
 // SESCloudWatchConfig holds the AWS region for CloudWatch SES metric queries.
@@ -76,7 +371,7 @@ type TenantStore struct {
 // List returns all tenants.
 func (s *TenantStore) List() ([]Tenant, error) {
 	rows, err := s.DB.Query(
-		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, created_at, updated_at
+		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key, created_at, updated_at
 		 FROM tenants ORDER BY id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list tenants: %w", err)
@@ -87,7 +382,7 @@ func (s *TenantStore) List() ([]Tenant, error) {
 	for rows.Next() {
 		var t Tenant
 		if err := rows.Scan(&t.ID, &t.Name, &t.DomainID, &t.DomainName,
-			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.AudienceURL, &t.NotifyHubURL, &t.NotifyHubAPIKey, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan tenant: %w", err)
 		}
 		tenants = append(tenants, t)
@@ -99,10 +394,10 @@ func (s *TenantStore) List() ([]Tenant, error) {
 func (s *TenantStore) GetByID(id int) (*Tenant, error) {
 	var t Tenant
 	err := s.DB.QueryRow(
-		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, created_at, updated_at
+		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key, created_at, updated_at
 		 FROM tenants WHERE id = $1`, id).
 		Scan(&t.ID, &t.Name, &t.DomainID, &t.DomainName,
-			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.CreatedAt, &t.UpdatedAt)
+			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.AudienceURL, &t.NotifyHubURL, &t.NotifyHubAPIKey, &t.CreatedAt, &t.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -113,15 +408,15 @@ func (s *TenantStore) GetByID(id int) (*Tenant, error) {
 }
 
 // Create inserts a new tenant and returns it.
-func (s *TenantStore) Create(name, domainID, domainName, esEndpoint, esIndex, esApiKey string) (*Tenant, error) {
+func (s *TenantStore) Create(name, domainID, domainName, esEndpoint, esIndex, esApiKey, audienceURL, notifyhubURL, notifyhubAPIKey string) (*Tenant, error) {
 	var t Tenant
 	err := s.DB.QueryRow(
-		`INSERT INTO tenants (name, domain_id, domain_name, es_endpoint, es_index, es_api_key)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 RETURNING id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, created_at, updated_at`,
-		name, domainID, domainName, esEndpoint, esIndex, esApiKey).
+		`INSERT INTO tenants (name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 RETURNING id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key, created_at, updated_at`,
+		name, domainID, domainName, esEndpoint, esIndex, esApiKey, audienceURL, notifyhubURL, notifyhubAPIKey).
 		Scan(&t.ID, &t.Name, &t.DomainID, &t.DomainName,
-			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.CreatedAt, &t.UpdatedAt)
+			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.AudienceURL, &t.NotifyHubURL, &t.NotifyHubAPIKey, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create tenant: %w", err)
 	}
@@ -163,7 +458,7 @@ func (s *TenantStore) SeedDefault() error {
 
 	if count == 0 {
 		// Table is empty — create default tenant
-		tenant, err := s.Create(name, domainID, domainName, esEndpoint, esIndex, esApiKey)
+		tenant, err := s.Create(name, domainID, domainName, esEndpoint, esIndex, esApiKey, "", "", "")
 		if err != nil {
 			return fmt.Errorf("seed default tenant: %w", err)
 		}
@@ -174,9 +469,9 @@ func (s *TenantStore) SeedDefault() error {
 	// Check if the first tenant has an empty domain_id and update it
 	var firstTenant Tenant
 	err = s.DB.QueryRow(
-		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key FROM tenants ORDER BY id ASC LIMIT 1`).
+		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url FROM tenants ORDER BY id ASC LIMIT 1`).
 		Scan(&firstTenant.ID, &firstTenant.Name, &firstTenant.DomainID, &firstTenant.DomainName,
-			&firstTenant.ESEndpoint, &firstTenant.ESIndex, &firstTenant.ESApiKey)
+			&firstTenant.ESEndpoint, &firstTenant.ESIndex, &firstTenant.ESApiKey, &firstTenant.AudienceURL)
 	if err != nil {
 		return fmt.Errorf("check first tenant: %w", err)
 	}
@@ -211,6 +506,7 @@ func EnsureTable(db *sql.DB) error {
 		es_endpoint TEXT NOT NULL DEFAULT 'http://localhost:9000',
 		es_index TEXT NOT NULL DEFAULT 'cadence-visibility',
 		es_api_key TEXT NOT NULL DEFAULT '',
+		audience_url TEXT NOT NULL DEFAULT '',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);`
@@ -235,6 +531,36 @@ type session struct {
 
 // sessions is the in-memory store: token → session.
 var sessions sync.Map
+
+// ============================================================
+// Data Cache (periodically refreshed from ES & CloudWatch)
+// ============================================================
+
+type dashboardCacheEntry struct {
+	mu          sync.RWMutex
+	Data        *APIResponse
+	TotalFailed int
+	UpdatedAt   time.Time
+}
+
+type sesCacheEntry struct {
+	mu        sync.RWMutex
+	Data      *SESMetricsResponse
+	UpdatedAt time.Time
+}
+
+// gcpTokenEntry caches a GCP identity token with its expiry.
+type gcpTokenEntry struct {
+	mu        sync.RWMutex
+	Token     string
+	ExpiresAt time.Time
+}
+
+var (
+	dashboardCache sync.Map // key: tenantID (int) -> *dashboardCacheEntry
+	sesCache       sync.Map // key: "tenantID:region" (string) -> *sesCacheEntry
+	gcpTokenCache  sync.Map // key: audienceURL (string) -> *gcpTokenEntry
+)
 
 // generateToken returns a 32-byte cryptographically-random URL-safe token.
 func generateToken() (string, error) {
@@ -299,10 +625,12 @@ func authVerifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce @appointy.com domain.
-	if !strings.HasSuffix(info.Email, "@appointy.com") && info.HD != "appointy.com" {
-		writeJSONError(w, "access restricted to @appointy.com accounts", http.StatusForbidden)
-		return
+	// Enforce @appointy.com domain (opt out via APPONTY_ONLY_LOGIN=false).
+	if getEnv("APPONTY_ONLY_LOGIN", "true") == "true" {
+		if !strings.HasSuffix(info.Email, "@appointy.com") && info.HD != "appointy.com" {
+			writeJSONError(w, "access restricted to @appointy.com accounts", http.StatusForbidden)
+			return
+		}
 	}
 
 	token, err := generateToken()
@@ -317,6 +645,9 @@ func authVerifyHandler(w http.ResponseWriter, r *http.Request) {
 		Picture: info.Picture,
 		Expiry:  time.Now().Add(24 * time.Hour),
 	})
+
+	// Track last activity for this user across all tenants
+	db.Exec(`UPDATE rbac SET last_activity = NOW() WHERE user_email = $1`, info.Email)
 
 	writeJSON(w, map[string]string{
 		"token":   token,
@@ -380,6 +711,102 @@ func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// requirePermission checks that the authenticated user has the required permission for this tenant.
+func requirePermission(permission string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			// First, require authentication
+			token := extractBearerToken(r)
+			if token == "" {
+				writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			val, ok := sessions.Load(token)
+			if !ok {
+				writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			s := val.(session)
+
+			// Get tenant_id from query
+			tenantIDStr := r.URL.Query().Get("tenant_id")
+			if tenantIDStr == "" {
+				writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+				return
+			}
+			var tenantID int
+			if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+				writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+				return
+			}
+
+			// Check RBAC for this user + tenant
+			var role string
+			var perms []string
+			err := db.QueryRow(`SELECT role, permissions FROM rbac WHERE user_email = $1 AND tenant_id = $2`,
+				s.Email, tenantID).Scan(&role, pq.Array(&perms))
+			if err == sql.ErrNoRows {
+				writeJSONError(w, "forbidden: no access to this tenant", http.StatusForbidden)
+				return
+			}
+			if err != nil {
+				log.Printf("ERROR: check rbac: %v", err)
+				writeJSONError(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+
+			// Admin has access to everything
+			if role == "admin" {
+				next(w, r)
+				return
+			}
+
+			// Check if user has the required permission
+			hasPermission := false
+			for _, p := range perms {
+				if p == permission {
+					hasPermission = true
+					break
+				}
+			}
+			if !hasPermission {
+				writeJSONError(w, "forbidden: insufficient permissions", http.StatusForbidden)
+				return
+			}
+
+			next(w, r)
+		}
+	}
+}
+
+// getUserEmailFromRequest extracts the authenticated user's email from the request's Bearer token.
+func getUserEmailFromRequest(r *http.Request) string {
+	token := extractBearerToken(r)
+	if token == "" {
+		return ""
+	}
+	val, ok := sessions.Load(token)
+	if !ok {
+		return ""
+	}
+	s := val.(session)
+	return s.Email
+}
+
+// getUserEmail extracts the authenticated user's email from the request's Bearer token.
+func getUserEmail(r *http.Request) (string, error) {
+	token := extractBearerToken(r)
+	if token == "" {
+		return "", fmt.Errorf("missing token")
+	}
+	val, ok := sessions.Load(token)
+	if !ok {
+		return "", fmt.Errorf("invalid session")
+	}
+	s := val.(session)
+	return s.Email, nil
 }
 
 // ============================================================
@@ -448,6 +875,7 @@ type RateData struct {
 // RecentWorkflow represents a single failed or timed-out workflow entry.
 type RecentWorkflow struct {
 	WorkflowID   string `json:"workflow_id"`
+	RunID        string `json:"run_id"`
 	WorkflowType string `json:"workflow_type"`
 	TaskList     string `json:"tasklist"`
 	Status       string `json:"status"`
@@ -463,9 +891,14 @@ type TasklistLatencyEntry struct {
 
 // P100ByWorkflowEntry represents the P100 (max) latency for a workflow type.
 type P100ByWorkflowEntry struct {
-	WorkflowType  string `json:"workflow_type"`
-	Count         int    `json:"count"`
-	P100LatencyMs int64  `json:"p100_latency_ms"`
+	WorkflowType  string  `json:"workflow_type"`
+	Count         int     `json:"count"`
+	P100LatencyMs int64   `json:"p100_latency_ms"`
+	SuccessRate   float64 `json:"success_rate"`
+	FailureRate   float64 `json:"failure_rate"`
+	SuccessCount  int     `json:"success_count"`
+	FailureCount  int     `json:"failure_count"`
+	OpenCount     int     `json:"open_count"`
 }
 
 // ActivityErrorEntry represents a single activity error type and its count in open workflows.
@@ -569,9 +1002,11 @@ type esP100Latency struct {
 
 // esP100ByWorkflowBucket is a single bucket in the by_workflow_type aggregation.
 type esP100ByWorkflowBucket struct {
-	Key         string     `json:"key"`
-	DocCount    int        `json:"doc_count"`
-	MaxDuration esMaxValue `json:"max_duration"`
+	Key       string         `json:"key"`
+	DocCount  int            `json:"doc_count"`
+	Completed *esP100Latency `json:"completed"`
+	Failed    *esP100Latency `json:"failed"`
+	Open      *esP100Latency `json:"open"`
 }
 
 // esP100ByWorkflowAgg holds the by_workflow_type aggregation result.
@@ -706,8 +1141,13 @@ func buildMsearchBody(cfg Config, nowNanos int64, limit int, tasklistWindow int6
 	}
 
 	// --- P100 latency by workflow type (top 100 completed workflows) ---
+	// Use the tasklist window as a fallback time range when no date picker is set.
+	p100FromNanos := fromNanos
+	if p100FromNanos == 0 {
+		p100FromNanos = nowNanos - (tasklistWindow * 1_000_000_000)
+	}
 	_ = enc.Encode(header)
-	_ = enc.Encode(buildP100ByWorkflowTypeQuery(nowNanos, domainFilter))
+	_ = enc.Encode(buildP100ByWorkflowTypeQuery(nowNanos, domainFilter, p100FromNanos, toNanos))
 
 	return buf.Bytes()
 }
@@ -763,7 +1203,7 @@ func buildWindowQuery(fromNanos, toNanos int64, domainFilter []interface{}) map[
 			},
 			"p100_latency": map[string]interface{}{
 				"filter": map[string]interface{}{
-					"term": map[string]int{"CloseStatus": 0},
+					"term": map[string]string{"CloseStatus": "0"},
 				},
 				"aggs": map[string]interface{}{
 					"max_duration": map[string]interface{}{
@@ -786,13 +1226,20 @@ func buildWindowQuery(fromNanos, toNanos int64, domainFilter []interface{}) map[
 func buildRecentQuery(statuses []int, domainFilter []interface{}, limit int, tasklistFilter []string, fromNanos, toNanos int64, offset int) map[string]interface{} {
 	must := []interface{}{}
 
+	// Convert CloseStatus values to strings for ES term/terms queries
+	// to handle both integer and keyword field mappings reliably.
+	statusStrs := make([]string, len(statuses))
+	for i, s := range statuses {
+		statusStrs[i] = strconv.Itoa(s)
+	}
+
 	if len(statuses) == 1 {
 		must = append(must, map[string]interface{}{
-			"term": map[string]int{"CloseStatus": statuses[0]},
+			"term": map[string]string{"CloseStatus": statusStrs[0]},
 		})
 	} else {
 		must = append(must, map[string]interface{}{
-			"terms": map[string]interface{}{"CloseStatus": statuses},
+			"terms": map[string]interface{}{"CloseStatus": statusStrs},
 		})
 	}
 
@@ -859,7 +1306,7 @@ func buildTasklistLatencyQuery(nowNanos int64, domainFilter []interface{}, windo
 
 	must := []interface{}{
 		map[string]interface{}{
-			"term": map[string]int{"CloseStatus": 0},
+			"term": map[string]string{"CloseStatus": "0"},
 		},
 		map[string]interface{}{
 			"range": map[string]interface{}{
@@ -879,7 +1326,7 @@ func buildTasklistLatencyQuery(nowNanos int64, domainFilter []interface{}, windo
 				"must": must,
 				"must_not": []interface{}{
 					map[string]interface{}{
-						"terms": map[string]interface{}{"CloseStatus": []int{1, 5}},
+						"terms": map[string]interface{}{"CloseStatus": []string{"1", "5"}},
 					},
 				},
 			},
@@ -941,7 +1388,7 @@ func buildActivityErrorQuery(domainFilter []interface{}, activityErrorField stri
 				})
 			default: // specific CloseStatus value
 				should = append(should, map[string]interface{}{
-					"term": map[string]int{"CloseStatus": sc},
+					"term": map[string]string{"CloseStatus": strconv.Itoa(sc)},
 				})
 			}
 		}
@@ -985,21 +1432,35 @@ func buildActivityErrorQuery(domainFilter []interface{}, activityErrorField stri
 
 // buildP100ByWorkflowTypeQuery constructs an ES query to find the top 100 workflow types
 // by count among completed workflows, computing the P100 (max) latency for each.
-func buildP100ByWorkflowTypeQuery(nowNanos int64, domainFilter []interface{}) map[string]interface{} {
-	must := []interface{}{
-		map[string]interface{}{
-			"term": map[string]int{"CloseStatus": 0},
+func buildP100ByWorkflowTypeQuery(nowNanos int64, domainFilter []interface{}, fromNanos, toNanos int64) map[string]interface{} {
+	// Remove CloseStatus filter from top-level - we want ALL workflow statuses
+	// Completed workflows are filtered inside a sub-aggregation.
+	// Ensure must is never nil (ES rejects null must).
+	// Make a proper copy of domainFilter to avoid mutating the original slice.
+	mustClause := make([]interface{}, len(domainFilter))
+	copy(mustClause, domainFilter)
+
+	// Add time range filter on StartTime (all workflows have StartTime)
+	// When fromNanos is 0, it falls back to the tasklist window (set in buildMsearchBody).
+	// When toNanos is 0, default to now to ensure a bounded query.
+	timeRange := map[string]int64{
+		"gte": fromNanos,
+		"lte": toNanos,
+	}
+	if toNanos <= 0 {
+		timeRange["lte"] = nowNanos
+	}
+	timeFilter := map[string]interface{}{
+		"range": map[string]interface{}{
+			"StartTime": timeRange,
 		},
 	}
-
-	for _, f := range domainFilter {
-		must = append(must, f)
-	}
+	mustClause = append(mustClause, timeFilter)
 
 	return map[string]interface{}{
 		"query": map[string]interface{}{
 			"bool": map[string]interface{}{
-				"must": must,
+				"must": mustClause,
 			},
 		},
 		"size": 0,
@@ -1011,12 +1472,31 @@ func buildP100ByWorkflowTypeQuery(nowNanos int64, domainFilter []interface{}) ma
 					"order": map[string]string{"_count": "desc"},
 				},
 				"aggs": map[string]interface{}{
-					"max_duration": map[string]interface{}{
-						"max": map[string]interface{}{
-							"script": map[string]interface{}{
-								"source": "doc['CloseTime'].value - doc['StartTime'].value",
-								"lang":   "painless",
+					"completed": map[string]interface{}{
+						"filter": map[string]interface{}{
+							"term": map[string]string{"CloseStatus": "0"},
+						},
+						"aggs": map[string]interface{}{
+							"max_duration": map[string]interface{}{
+								"max": map[string]interface{}{
+									"script": map[string]interface{}{
+										"source": "doc['CloseTime'].size()>0 && doc['StartTime'].size()>0 ? (doc['CloseTime'].value - doc['StartTime'].value) / 1000000 : 0",
+										"lang":   "painless",
+									},
+								},
 							},
+						},
+					},
+					"failed": map[string]interface{}{
+						"filter": map[string]interface{}{
+							"terms": map[string]interface{}{
+								"CloseStatus": []string{"1", "5"},
+							},
+						},
+					},
+					"open": map[string]interface{}{
+						"missing": map[string]interface{}{
+							"field": "CloseTime",
 						},
 					},
 				},
@@ -1064,14 +1544,17 @@ func parseWindowResponse(resp esResponse, w WindowConfig) WindowData {
 
 	if resp.Aggregations != nil {
 		for _, b := range resp.Aggregations.ByStatus.Buckets {
-			switch b.Key {
-			case 0: // Completed
+			// Convert key to string for comparison — ES may return CloseStatus as
+			// an integer (long mapping) or a string (keyword mapping).
+			keyStr := fmt.Sprintf("%v", b.Key)
+			switch keyStr {
+			case "0": // Completed
 				completed = b.DocCount
-			case 1: // Failed
+			case "1": // Failed
 				failed = b.DocCount
-			case 4: // Cancelled / ContinuedAsNew
+			case "4": // Cancelled / ContinuedAsNew
 				cancelled = b.DocCount
-			case 5: // TimedOut
+			case "5": // TimedOut
 				timedOut = b.DocCount
 			}
 		}
@@ -1149,6 +1632,7 @@ func parseRecentHits(resp esResponse) []RecentWorkflow {
 
 		result = append(result, RecentWorkflow{
 			WorkflowID:   src.WorkflowID,
+			RunID:        src.RunID,
 			WorkflowType: src.WorkflowType,
 			TaskList:     src.TaskList,
 			Status:       statusLabel,
@@ -1183,6 +1667,66 @@ func formatCloseTime(raw json.RawMessage) string {
 // ============================================================
 
 // queryElasticsearch sends the _msearch request and returns the parsed response.
+// getGCPIdentityToken fetches a Google identity token from the GCP metadata server
+// for the given audience URL. It caches the token and refreshes it every 50 minutes
+// (tokens expire in 1 hour).
+func getGCPIdentityToken(audienceURL string) (string, error) {
+	if audienceURL == "" {
+		return "", nil
+	}
+
+	// Check cache first
+	if val, ok := gcpTokenCache.Load(audienceURL); ok {
+		entry := val.(*gcpTokenEntry)
+		entry.mu.RLock()
+		token := entry.Token
+		expiresAt := entry.ExpiresAt
+		entry.mu.RUnlock()
+		// Refresh 10 minutes before expiry (tokens expire in ~1 hour)
+		if token != "" && time.Now().Add(10*time.Minute).Before(expiresAt) {
+			return token, nil
+		}
+	}
+
+	// Fetch a new token from the GCP metadata server
+	metadataURL := "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=" + url.QueryEscape(audienceURL)
+	req, err := http.NewRequest(http.MethodGet, metadataURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("create metadata request: %w", err)
+	}
+	req.Header.Set("Metadata-Flavor", "Google")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("metadata request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read metadata response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("metadata returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	token := strings.TrimSpace(string(body))
+	if token == "" {
+		return "", fmt.Errorf("empty token from metadata server")
+	}
+
+	// Cache the token with a 50-minute refresh window (tokens expire in ~1 hour)
+	entry := &gcpTokenEntry{
+		Token:     token,
+		ExpiresAt: time.Now().Add(50 * time.Minute),
+	}
+	gcpTokenCache.Store(audienceURL, entry)
+
+	return token, nil
+}
+
 func queryElasticsearch(cfg Config, limit int, tasklistWindow int64, statusFilter []int, tasklistFilter []string, fromNanos, toNanos int64, offset int, activityErrorField string, activityStatusConditions []int, activityErrorDetailField string) (*esMultiSearchResponse, error) {
 	nowNanos := time.Now().UnixNano()
 	body := buildMsearchBody(cfg, nowNanos, limit, tasklistWindow, statusFilter, tasklistFilter, fromNanos, toNanos, offset, activityErrorField, activityStatusConditions, activityErrorDetailField)
@@ -1194,7 +1738,18 @@ func queryElasticsearch(cfg Config, limit int, tasklistWindow int64, statusFilte
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-ndjson")
-	if cfg.ESApiKey != "" {
+
+	// Use GCP identity token (Bearer auth) if audience_url is set.
+	// Fall back to x-api-key for backward compatibility.
+	if cfg.AudienceURL != "" {
+		token, err := getGCPIdentityToken(cfg.AudienceURL)
+		if err != nil {
+			log.Printf("WARN: failed to get GCP identity token for %s: %v", cfg.AudienceURL, err)
+		} else if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
+	if cfg.ESApiKey != "" && req.Header.Get("Authorization") == "" {
 		req.Header.Set("x-api-key", cfg.ESApiKey)
 	}
 
@@ -1339,16 +1894,45 @@ func buildResponse(cfg Config, tenantID int, msResp *esMultiSearchResponse, limi
 	}
 	if p100WorkflowIdx < len(responses) {
 		resp := responses[p100WorkflowIdx]
+		if len(resp.Error) > 0 {
+			log.Printf("ERROR: P100 ES query error: %s", string(resp.Error))
+		}
 		if resp.Aggregations != nil && resp.Aggregations.P100ByWorkflow != nil {
 			for _, b := range resp.Aggregations.P100ByWorkflow.Buckets {
+				totalCount := b.DocCount
+				completedCount := 0
 				p100Ms := int64(0)
-				if b.MaxDuration.Value > 0 {
-					p100Ms = int64(b.MaxDuration.Value / 1_000_000)
+				if b.Completed != nil {
+					completedCount = b.Completed.DocCount
+					if b.Completed.MaxDuration.Value > 0 {
+						p100Ms = int64(b.Completed.MaxDuration.Value)
+					}
+				}
+				successRate := 0.0
+				if totalCount > 0 {
+					successRate = math.Round(float64(completedCount)/float64(totalCount)*1000) / 10
+				}
+				failedCount := 0
+				if b.Failed != nil {
+					failedCount = b.Failed.DocCount
+				}
+				failureRate := 0.0
+				if totalCount > 0 {
+					failureRate = math.Round(float64(failedCount)/float64(totalCount)*1000) / 10
+				}
+				openCount := 0
+				if b.Open != nil {
+					openCount = b.Open.DocCount
 				}
 				p100ByWorkflow = append(p100ByWorkflow, P100ByWorkflowEntry{
 					WorkflowType:  b.Key,
-					Count:         b.DocCount,
+					Count:         totalCount,
 					P100LatencyMs: p100Ms,
+					SuccessRate:   successRate,
+					FailureRate:   failureRate,
+					SuccessCount:  completedCount,
+					FailureCount:  failedCount,
+					OpenCount:     openCount,
 				})
 			}
 		}
@@ -1573,6 +2157,34 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Check cache first for this tenant (only when using default parameters)
+	useCache := tenantID > 0 &&
+		limit == 20 &&
+		tasklistWindow == 3600 &&
+		statusFilterStr == "" &&
+		len(tasklistFilter) == 0 &&
+		fromNanos == 0 &&
+		toNanos == 0 &&
+		offset == 0 &&
+		activityErrorField == "WorkflowType" &&
+		activityStatusFilterStr == "" &&
+		activityErrorDetailField == ""
+
+	if useCache {
+		if val, ok := dashboardCache.Load(tenantID); ok {
+			entry := val.(*dashboardCacheEntry)
+			entry.mu.RLock()
+			data := entry.Data
+			totalFailed := entry.TotalFailed
+			entry.mu.RUnlock()
+			if data != nil {
+				data.TotalFailed = totalFailed
+				writeJSON(w, data, http.StatusOK)
+				return
+			}
+		}
+	}
+
 	// Load tenant from database
 	var tenant *Tenant
 	var err error
@@ -1605,11 +2217,12 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Build per-request config from tenant data
 	cfg := Config{
-		ES:         tenant.ESEndpoint,
-		Index:      tenant.ESIndex,
-		DomainID:   tenant.DomainID,
-		DomainName: tenant.DomainName,
-		ESApiKey:   tenant.ESApiKey,
+		ES:          tenant.ESEndpoint,
+		Index:       tenant.ESIndex,
+		DomainID:    tenant.DomainID,
+		DomainName:  tenant.DomainName,
+		ESApiKey:    tenant.ESApiKey,
+		AudienceURL: tenant.AudienceURL,
 	}
 
 	// Query Elasticsearch
@@ -1640,16 +2253,33 @@ func tenantsHandler(w http.ResponseWriter, r *http.Request) {
 		if tenants == nil {
 			tenants = []Tenant{}
 		}
-		writeJSON(w, tenants, http.StatusOK)
+
+		// Filter tenants by the user's RBAC assignments
+		userEmail := getUserEmailFromRequest(r)
+		var filtered []Tenant
+		for _, t := range tenants {
+			var role string
+			err := db.QueryRow(`SELECT role FROM rbac WHERE user_email = $1 AND tenant_id = $2`, userEmail, t.ID).Scan(&role)
+			if err == nil {
+				filtered = append(filtered, t)
+			}
+		}
+		if filtered == nil {
+			filtered = []Tenant{}
+		}
+		writeJSON(w, filtered, http.StatusOK)
 
 	case http.MethodPost:
 		var req struct {
-			Name       string `json:"name"`
-			DomainID   string `json:"domain_id"`
-			DomainName string `json:"domain_name"`
-			ESEndpoint string `json:"es_endpoint"`
-			ESIndex    string `json:"es_index"`
-			ESApiKey   string `json:"es_api_key"`
+			Name            string `json:"name"`
+			DomainID        string `json:"domain_id"`
+			DomainName      string `json:"domain_name"`
+			ESEndpoint      string `json:"es_endpoint"`
+			ESIndex         string `json:"es_index"`
+			ESApiKey        string `json:"es_api_key"`
+			AudienceURL     string `json:"audience_url"`
+			NotifyHubURL    string `json:"notifyhub_url"`
+			NotifyHubAPIKey string `json:"notifyhub_api_key"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSONError(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
@@ -1668,10 +2298,6 @@ func tenantsHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "domain_name is required", http.StatusBadRequest)
 			return
 		}
-		if req.ESApiKey == "" {
-			writeJSONError(w, "es_api_key is required", http.StatusBadRequest)
-			return
-		}
 
 		// Use defaults for empty fields
 		if req.ESEndpoint == "" {
@@ -1681,10 +2307,10 @@ func tenantsHandler(w http.ResponseWriter, r *http.Request) {
 			req.ESIndex = "cadence-visibility"
 		}
 
-		tenant, err := tenantStore.Create(req.Name, req.DomainID, req.DomainName, req.ESEndpoint, req.ESIndex, req.ESApiKey)
+		tenant, err := tenantStore.Create(req.Name, req.DomainID, req.DomainName, req.ESEndpoint, req.ESIndex, req.ESApiKey, req.AudienceURL, req.NotifyHubURL, req.NotifyHubAPIKey)
 		if err != nil {
 			log.Printf("ERROR: create tenant: %v", err)
-			writeJSONError(w, fmt.Sprintf("create tenant: %v", err), http.StatusInternalServerError)
+			writeJSONError(w, fmt.Sprintf("failed to create tenant: %v", err), http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, tenant, http.StatusCreated)
@@ -1760,7 +2386,14 @@ func getSESCloudWatchConfig() SESCloudWatchConfig {
 
 // queryCloudWatchSESMetrics queries AWS CloudWatch for SES send, bounce, complaint, and reject metrics.
 func queryCloudWatchSESMetrics(ctx context.Context, cfg SESCloudWatchConfig, periodSeconds int32, startTime, endTime time.Time) (*SESMetricsResponse, error) {
-	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(cfg.Region))
+	awsCfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(cfg.Region),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			getEnv("AWS_ACCESS_KEY_ID", ""),
+			getEnv("AWS_SECRET_ACCESS_KEY", ""),
+			getEnv("AWS_SESSION_TOKEN", ""),
+		)),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("load AWS config: %w", err)
 	}
@@ -2080,6 +2713,18 @@ func sesMetricsHandler(w http.ResponseWriter, r *http.Request) {
 		region = getEnv("AWS_REGION", "us-east-1")
 	}
 
+	// Try cache first for this region
+	if val, ok := sesCache.Load(region); ok {
+		entry := val.(*sesCacheEntry)
+		entry.mu.RLock()
+		data := entry.Data
+		entry.mu.RUnlock()
+		if data != nil {
+			writeJSON(w, data, http.StatusOK)
+			return
+		}
+	}
+
 	sesCfg := getSESCloudWatchConfig()
 	sesCfg.Region = region
 
@@ -2127,7 +2772,14 @@ func sesDebugHandler(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	awsCfg, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion(region),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			getEnv("AWS_ACCESS_KEY_ID", ""),
+			getEnv("AWS_SECRET_ACCESS_KEY", ""),
+			getEnv("AWS_SESSION_TOKEN", ""),
+		)),
+	)
 	if err != nil {
 		writeJSONError(w, fmt.Sprintf("load AWS config: %v", err), http.StatusInternalServerError)
 		return
@@ -2190,8 +2842,2665 @@ func boolPtr(b bool) *bool {
 }
 
 // ============================================================
+// RBAC Handlers
+// ============================================================
+
+var adminKeyOnce sync.Once
+var adminKeyUsed bool
+
+// rbacSetupAdminHandler handles POST /api/rbac/setup-admin.
+// It uses a one-time ADMIN_KEY to set up the first admin user.
+// The ADMIN_KEY environment variable must match, and no admin must exist yet.
+func rbacSetupAdminHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		AdminKey  string `json:"admin_key"`
+		UserEmail string `json:"user_email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.AdminKey == "" {
+		writeJSONError(w, "admin_key is required", http.StatusBadRequest)
+		return
+	}
+	if req.UserEmail == "" {
+		writeJSONError(w, "user_email is required", http.StatusBadRequest)
+		return
+	}
+
+	// Verify admin key
+	expectedKey := getEnv("ADMIN_KEY", "")
+	if expectedKey == "" {
+		writeJSONError(w, "admin setup is not configured or already completed", http.StatusBadRequest)
+		return
+	}
+	if req.AdminKey != expectedKey {
+		writeJSONError(w, "invalid admin_key", http.StatusUnauthorized)
+		return
+	}
+
+	// Check the user's session exists
+	// We need to allow this without requiring a session since it's first-time setup
+	// But we do need to validate the user exists in the sessions map
+	// Use a simple existence check - the user must have signed in at least once
+	found := false
+	sessions.Range(func(k, v any) bool {
+		s := v.(session)
+		if s.Email == req.UserEmail {
+			found = true
+			return false
+		}
+		return true
+	})
+	if !found {
+		writeJSONError(w, "user has not signed in yet. ask them to sign in first.", http.StatusBadRequest)
+		return
+	}
+
+	// Create admin with all permissions (including "admin" for the Clients page)
+	allPerms := []string{
+		"admin", "overview", "failures", "activity-errors", "p100-latency",
+		"ses", "notifications", "report-history", "peoples",
+	}
+
+	// Get all tenants and create admin for each
+	rows, err := db.Query(`SELECT id FROM tenants ORDER BY id`)
+	if err != nil {
+		log.Printf("ERROR: list tenants: %v", err)
+		writeJSONError(w, "list tenants failed", http.StatusInternalServerError)
+		return
+	}
+
+	tenantIDs := []int{}
+	for rows.Next() {
+		var tid int
+		if err := rows.Scan(&tid); err != nil {
+			continue
+		}
+		tenantIDs = append(tenantIDs, tid)
+	}
+	rows.Close()
+
+	// If no tenants exist, create a default one so the admin can be set up.
+	if len(tenantIDs) == 0 {
+		name := getEnv("DEFAULT_TENANT_NAME", "Default")
+		domainID := getEnv("DEFAULT_DOMAIN_ID", "")
+		domainName := getEnv("DEFAULT_DOMAIN_NAME", "unknown")
+		esEndpoint := getEnv("DEFAULT_ES", "http://localhost:9000")
+		esIndex := getEnv("DEFAULT_INDEX", "cadence-visibility")
+		esApiKey := getEnv("DEFAULT_ES_API_KEY", "")
+
+		var t Tenant
+		err := db.QueryRow(
+			`INSERT INTO tenants (name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url)
+			 VALUES ($1, $2, $3, $4, $5, $6, '')
+			 RETURNING id`,
+			name, domainID, domainName, esEndpoint, esIndex, esApiKey).Scan(&t.ID)
+		if err != nil {
+			log.Printf("ERROR: create default tenant for admin setup: %v", err)
+			writeJSONError(w, "failed to create default tenant", http.StatusInternalServerError)
+			return
+		}
+		tenantIDs = append(tenantIDs, t.ID)
+		log.Printf("Created default tenant id=%d for admin setup", t.ID)
+	}
+
+	createdTenants := []int{}
+	for _, tid := range tenantIDs {
+		_, err := db.Exec(`
+			INSERT INTO rbac (user_email, tenant_id, role, permissions, updated_at, last_activity)
+			VALUES ($1, $2, 'admin', $3, NOW(), NOW())
+			ON CONFLICT (user_email, tenant_id)
+			DO UPDATE SET role = 'admin', permissions = $3, updated_at = NOW(), last_activity = NOW()`,
+			req.UserEmail, tid, pq.Array(allPerms))
+		if err != nil {
+			log.Printf("ERROR: create admin for tenant %d: %v", tid, err)
+			continue
+		}
+		createdTenants = append(createdTenants, tid)
+	}
+
+	if len(createdTenants) == 0 {
+		log.Printf("ERROR: no tenants found for admin setup")
+		writeJSONError(w, "no tenant found", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("ADMIN SETUP COMPLETE: user %q promoted to admin for %d tenant(s): %v", req.UserEmail, len(createdTenants), createdTenants)
+	log.Printf("ADMIN_KEY has been invalidated")
+
+	writeJSON(w, map[string]string{
+		"status":     "admin_created",
+		"user_email": req.UserEmail,
+		"role":       "admin",
+	}, http.StatusOK)
+}
+
+// rbacUsersHandler lists all users who have signed in (via the sessions map) and their RBAC entries.
+func rbacUsersHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	tenantIDStr := r.URL.Query().Get("tenant_id")
+	if tenantIDStr == "" {
+		writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+		return
+	}
+	var tenantID int
+	if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+		writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+		return
+	}
+
+	// Get current user's role to check if admin
+	currentEmail, err := getUserEmail(r)
+	if err != nil {
+		writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Build a map of signed-in users (from sessions), skipping expired sessions
+	now := time.Now()
+	userSet := make(map[string]session)
+	sessions.Range(func(k, v any) bool {
+		s := v.(session)
+		if now.After(s.Expiry) {
+			sessions.Delete(k)
+			return true
+		}
+		userSet[s.Email] = s
+		return true
+	})
+
+	// Get RBAC entries for this tenant
+	rows, err := db.Query(`
+		SELECT id, user_email, tenant_id, role, permissions, created_at, updated_at, last_activity
+		FROM rbac WHERE tenant_id = $1 ORDER BY user_email`, tenantID)
+	if err != nil {
+		log.Printf("ERROR: list rbac: %v", err)
+		writeJSONError(w, fmt.Sprintf("list: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	rbacMap := make(map[string]RBACEntry)
+	for rows.Next() {
+		var e RBACEntry
+		if err := rows.Scan(&e.ID, &e.UserEmail, &e.TenantID, &e.Role, pq.Array(&e.Permissions), &e.CreatedAt, &e.UpdatedAt, &e.LastActivity); err != nil {
+			log.Printf("ERROR: scan rbac: %v", err)
+			continue
+		}
+		rbacMap[e.UserEmail] = e
+	}
+
+	// Merge: all session users + any RBAC entries for users not currently signed in
+	result := make([]map[string]interface{}, 0)
+	seen := make(map[string]bool)
+
+	// Add all RBAC entries first
+	for _, entry := range rbacMap {
+		seen[entry.UserEmail] = true
+
+		// Ensure users with role "admin" always have the "admin" permission.
+		perms := entry.Permissions
+		if entry.Role == "admin" {
+			hasAdmin := false
+			for _, p := range perms {
+				if p == "admin" {
+					hasAdmin = true
+					break
+				}
+			}
+			if !hasAdmin {
+				perms = append(perms, "admin")
+			}
+		}
+
+		item := map[string]interface{}{
+			"id":            entry.ID,
+			"user_email":    entry.UserEmail,
+			"tenant_id":     entry.TenantID,
+			"role":          entry.Role,
+			"permissions":   perms,
+			"signed_in":     false,
+			"last_activity": entry.LastActivity,
+		}
+		if s, ok := userSet[entry.UserEmail]; ok {
+			item["name"] = s.Name
+			item["picture"] = s.Picture
+			item["signed_in"] = true
+		}
+		result = append(result, item)
+	}
+
+	// Add session users without RBAC entries
+	for email, s := range userSet {
+		if !seen[email] {
+			result = append(result, map[string]interface{}{
+				"id":            0,
+				"user_email":    email,
+				"tenant_id":     tenantID,
+				"role":          "user",
+				"permissions":   []string{},
+				"signed_in":     true,
+				"name":          s.Name,
+				"picture":       s.Picture,
+				"last_activity": nil,
+			})
+		}
+	}
+
+	// Also get current user's role
+	currentRole := "user"
+	if entry, ok := rbacMap[currentEmail]; ok {
+		currentRole = entry.Role
+	} else {
+		// Check if the sessions map has any admin for this tenant
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"users":        result,
+		"current_user": currentEmail,
+		"current_role": currentRole,
+	}, http.StatusOK)
+}
+
+// rbacUserTenantsHandler handles GET, POST, and DELETE on /api/rbac/user-tenants.
+// GET  /api/rbac/user-tenants?user_email=X — returns all tenants the user has RBAC entries for
+// POST /api/rbac/user-tenants — assigns a user to a tenant (admin only)
+// DELETE /api/rbac/user-tenants?user_email=X&tenant_id=N — removes a user from a tenant (admin only)
+func rbacUserTenantsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		userEmail := r.URL.Query().Get("user_email")
+		if userEmail == "" {
+			writeJSONError(w, "missing user_email", http.StatusBadRequest)
+			return
+		}
+
+		rows, err := db.Query(`
+			SELECT t.id, t.name, r.role, r.permissions, r.created_at, r.updated_at, r.last_activity
+			FROM rbac r
+			JOIN tenants t ON t.id = r.tenant_id
+			WHERE r.user_email = $1
+			ORDER BY t.name`, userEmail)
+		if err != nil {
+			log.Printf("ERROR: list user tenants: %v", err)
+			writeJSONError(w, fmt.Sprintf("list: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		type UserTenant struct {
+			TenantID     int        `json:"tenant_id"`
+			TenantName   string     `json:"tenant_name"`
+			Role         string     `json:"role"`
+			Permissions  []string   `json:"permissions"`
+			CreatedAt    time.Time  `json:"created_at"`
+			UpdatedAt    time.Time  `json:"updated_at"`
+			LastActivity *time.Time `json:"last_activity"`
+		}
+
+		tenants := make([]UserTenant, 0)
+		for rows.Next() {
+			var ut UserTenant
+			if err := rows.Scan(&ut.TenantID, &ut.TenantName, &ut.Role, pq.Array(&ut.Permissions), &ut.CreatedAt, &ut.UpdatedAt, &ut.LastActivity); err != nil {
+				log.Printf("ERROR: scan user tenant: %v", err)
+				continue
+			}
+			// Ensure users with role "admin" always have the "admin" permission.
+			if ut.Role == "admin" {
+				hasAdmin := false
+				for _, p := range ut.Permissions {
+					if p == "admin" {
+						hasAdmin = true
+						break
+					}
+				}
+				if !hasAdmin {
+					ut.Permissions = append(ut.Permissions, "admin")
+				}
+			}
+			tenants = append(tenants, ut)
+		}
+		writeJSON(w, tenants, http.StatusOK)
+
+	case http.MethodPost:
+		// Assign a user to a tenant -- only admins can do this
+		tenantIDStr := r.URL.Query().Get("tenant_id")
+		if tenantIDStr == "" {
+			writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+			return
+		}
+		var tenantID int
+		if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+			writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+			return
+		}
+
+		// Only admins can assign users to tenants
+		currentEmail, err := getUserEmail(r)
+		if err != nil {
+			writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var currentEntry RBACEntry
+		err = db.QueryRow(`
+			SELECT role FROM rbac WHERE user_email = $1 AND tenant_id = $2`,
+			currentEmail, tenantID).Scan(&currentEntry.Role)
+		if err == sql.ErrNoRows {
+			writeJSONError(w, "only admins can manage user assignments", http.StatusForbidden)
+			return
+		}
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("check role: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if currentEntry.Role != "admin" {
+			writeJSONError(w, "only admins can manage user assignments", http.StatusForbidden)
+			return
+		}
+
+		var req struct {
+			UserEmail   string   `json:"user_email"`
+			Role        string   `json:"role"`
+			Permissions []string `json:"permissions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, fmt.Sprintf("invalid body: %v", err), http.StatusBadRequest)
+			return
+		}
+		if req.UserEmail == "" {
+			writeJSONError(w, "user_email is required", http.StatusBadRequest)
+			return
+		}
+		if req.Role != "admin" && req.Role != "user" {
+			req.Role = "user"
+		}
+		if req.Permissions == nil {
+			req.Permissions = []string{}
+		}
+
+		_, err = db.Exec(`
+			INSERT INTO rbac (user_email, tenant_id, role, permissions, updated_at, last_activity)
+			VALUES ($1, $2, $3, $4, NOW(), NOW())
+			ON CONFLICT (user_email, tenant_id)
+			DO UPDATE SET role = $3, permissions = $4, updated_at = NOW(), last_activity = NOW()`,
+			req.UserEmail, tenantID, req.Role, pq.Array(req.Permissions))
+		if err != nil {
+			log.Printf("ERROR: assign user to tenant: %v", err)
+			writeJSONError(w, fmt.Sprintf("assign: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("USER ASSIGNED: %q to tenant %d with role %q", req.UserEmail, tenantID, req.Role)
+		writeJSON(w, map[string]string{"status": "assigned"}, http.StatusOK)
+
+	case http.MethodDelete:
+		userEmail := r.URL.Query().Get("user_email")
+		tenantIDStr := r.URL.Query().Get("tenant_id")
+
+		if userEmail == "" || tenantIDStr == "" {
+			writeJSONError(w, "missing user_email or tenant_id", http.StatusBadRequest)
+			return
+		}
+		var tenantID int
+		if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+			writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+			return
+		}
+
+		// Only admins can remove users from tenants
+		currentEmail, err := getUserEmail(r)
+		if err != nil {
+			writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Check admin status for any tenant the current user is an admin of
+		var currentEntry RBACEntry
+		err = db.QueryRow(`
+			SELECT role FROM rbac WHERE user_email = $1 AND tenant_id = $2`,
+			currentEmail, tenantID).Scan(&currentEntry.Role)
+		if err == sql.ErrNoRows {
+			writeJSONError(w, "only admins can manage user assignments", http.StatusForbidden)
+			return
+		}
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("check role: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if currentEntry.Role != "admin" {
+			writeJSONError(w, "only admins can manage user assignments", http.StatusForbidden)
+			return
+		}
+
+		// Cannot remove yourself
+		if userEmail == currentEmail {
+			writeJSONError(w, "cannot remove yourself from a tenant", http.StatusBadRequest)
+			return
+		}
+
+		res, err := db.Exec("DELETE FROM rbac WHERE user_email = $1 AND tenant_id = $2", userEmail, tenantID)
+		if err != nil {
+			log.Printf("ERROR: remove user from tenant: %v", err)
+			writeJSONError(w, fmt.Sprintf("remove: %v", err), http.StatusInternalServerError)
+			return
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			writeJSONError(w, "user is not assigned to this tenant", http.StatusNotFound)
+			return
+		}
+
+		log.Printf("USER REMOVED: %q from tenant %d", userEmail, tenantID)
+		writeJSON(w, map[string]string{"status": "removed"}, http.StatusOK)
+
+	default:
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// rbacHandler handles GET and PUT on /api/rbac.
+// GET  /api/rbac?tenant_id=N -- returns the current user's permissions
+// PUT  /api/rbac?tenant_id=N -- updates a user's RBAC entry (admin only)
+func rbacHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		tenantIDStr := r.URL.Query().Get("tenant_id")
+		if tenantIDStr == "" {
+			writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+			return
+		}
+		var tenantID int
+		if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+			writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+			return
+		}
+
+		currentEmail, err := getUserEmail(r)
+		if err != nil {
+			writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var entry RBACEntry
+		err = db.QueryRow(`
+			SELECT id, user_email, tenant_id, role, permissions, created_at, updated_at, last_activity
+			FROM rbac WHERE user_email = $1 AND tenant_id = $2`,
+			currentEmail, tenantID).
+			Scan(&entry.ID, &entry.UserEmail, &entry.TenantID, &entry.Role, pq.Array(&entry.Permissions), &entry.CreatedAt, &entry.UpdatedAt, &entry.LastActivity)
+		if err == sql.ErrNoRows {
+			// Return default permissions for new users
+			writeJSON(w, map[string]interface{}{
+				"user_email":  currentEmail,
+				"tenant_id":   tenantID,
+				"role":        "user",
+				"permissions": []string{},
+			}, http.StatusOK)
+			return
+		}
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("get rbac: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Ensure users with role "admin" always have the "admin" permission.
+		// This handles existing records that may have been created before "admin"
+		// was added to the default permissions list.
+		if entry.Role == "admin" {
+			hasAdmin := false
+			for _, p := range entry.Permissions {
+				if p == "admin" {
+					hasAdmin = true
+					break
+				}
+			}
+			if !hasAdmin {
+				entry.Permissions = append(entry.Permissions, "admin")
+				// Also persist it so subsequent reads don't need the fix.
+				db.Exec(`UPDATE rbac SET permissions = $1, updated_at = NOW() WHERE id = $2`,
+					pq.Array(entry.Permissions), entry.ID)
+			}
+		}
+
+		writeJSON(w, entry, http.StatusOK)
+
+	case http.MethodPut:
+		tenantIDStr := r.URL.Query().Get("tenant_id")
+		if tenantIDStr == "" {
+			writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+			return
+		}
+		var tenantID int
+		if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+			writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+			return
+		}
+
+		// Only admins can update RBAC
+		currentEmail, err := getUserEmail(r)
+		if err != nil {
+			writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		var currentEntry RBACEntry
+		err = db.QueryRow(`
+			SELECT role FROM rbac WHERE user_email = $1 AND tenant_id = $2`,
+			currentEmail, tenantID).Scan(&currentEntry.Role)
+		if err == sql.ErrNoRows {
+			writeJSONError(w, "only admins can manage permissions", http.StatusForbidden)
+			return
+		}
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("check role: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if currentEntry.Role != "admin" {
+			writeJSONError(w, "only admins can manage permissions", http.StatusForbidden)
+			return
+		}
+
+		var req struct {
+			UserEmail   string   `json:"user_email"`
+			Role        string   `json:"role"`
+			Permissions []string `json:"permissions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, fmt.Sprintf("invalid body: %v", err), http.StatusBadRequest)
+			return
+		}
+		if req.UserEmail == "" {
+			writeJSONError(w, "user_email is required", http.StatusBadRequest)
+			return
+		}
+		if req.Role != "admin" && req.Role != "user" {
+			req.Role = "user"
+		}
+		if req.Permissions == nil {
+			req.Permissions = []string{}
+		}
+
+		var entry RBACEntry
+		err = db.QueryRow(`
+			INSERT INTO rbac (user_email, tenant_id, role, permissions, updated_at)
+			VALUES ($1, $2, $3, $4, NOW())
+			ON CONFLICT (user_email, tenant_id)
+			DO UPDATE SET role = $3, permissions = $4, updated_at = NOW()
+			RETURNING id, user_email, tenant_id, role, permissions, created_at, updated_at, last_activity`,
+			req.UserEmail, tenantID, req.Role, pq.Array(req.Permissions)).
+			Scan(&entry.ID, &entry.UserEmail, &entry.TenantID, &entry.Role, pq.Array(&entry.Permissions), &entry.CreatedAt, &entry.UpdatedAt, &entry.LastActivity)
+		if err != nil {
+			log.Printf("ERROR: upsert rbac: %v", err)
+			writeJSONError(w, fmt.Sprintf("save rbac: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, entry, http.StatusOK)
+
+	default:
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// rbacMyAccessHandler handles GET /api/rbac/my-access.
+// Returns the current user's access status across all tenants and admin contact info.
+func rbacMyAccessHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	currentEmail, err := getUserEmail(r)
+	if err != nil {
+		writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Check if user has any RBAC entries
+	var entryCount int
+	db.QueryRow(`SELECT COUNT(*) FROM rbac WHERE user_email = $1`, currentEmail).Scan(&entryCount)
+
+	// Get admin contact info (all users with role='admin')
+	rows, err := db.Query(`
+		SELECT DISTINCT r.user_email FROM rbac r WHERE r.role = 'admin' ORDER BY r.user_email`)
+	if err != nil {
+		log.Printf("ERROR: list admins: %v", err)
+		writeJSONError(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	adminEmails := make([]string, 0)
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			continue
+		}
+		adminEmails = append(adminEmails, email)
+	}
+
+	// Try to get admin names/pictures from sessions
+	adminContacts := make([]map[string]interface{}, 0)
+	for _, email := range adminEmails {
+		contact := map[string]interface{}{
+			"email": email,
+			"name":  email,
+		}
+		// Look up in sessions for name/picture
+		sessions.Range(func(k, v any) bool {
+			s := v.(session)
+			if s.Email == email {
+				contact["name"] = s.Name
+				contact["picture"] = s.Picture
+				return false
+			}
+			return true
+		})
+		adminContacts = append(adminContacts, contact)
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"has_access": entryCount > 0,
+		"user_email": currentEmail,
+		"admins":     adminContacts,
+	}, http.StatusOK)
+}
+
+// ============================================================
+// Alerts Handlers
+// ============================================================
+
+// alertsConfigHandler handles GET and PUT on /api/alerts/config.
+// GET  /api/alerts/config?tenant_id=N — returns tenant's notifyhub config
+// PUT  /api/alerts/config?tenant_id=N — updates tenant's notifyhub config
+func alertsConfigHandler(w http.ResponseWriter, r *http.Request) {
+	idStr := r.URL.Query().Get("tenant_id")
+	if idStr == "" {
+		writeJSONError(w, "missing tenant_id query parameter", http.StatusBadRequest)
+		return
+	}
+	var tenantID int
+	if _, err := fmt.Sscanf(idStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+		writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		tenant, err := tenantStore.GetByID(tenantID)
+		if err != nil {
+			log.Printf("ERROR: get tenant %d: %v", tenantID, err)
+			writeJSONError(w, fmt.Sprintf("get tenant: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if tenant == nil {
+			writeJSONError(w, "tenant not found", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, map[string]string{
+			"notifyhub_url":     tenant.NotifyHubURL,
+			"notifyhub_api_key": tenant.NotifyHubAPIKey,
+		}, http.StatusOK)
+
+	case http.MethodPut:
+		var req struct {
+			NotifyHubURL    string `json:"notifyhub_url"`
+			NotifyHubAPIKey string `json:"notifyhub_api_key"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		if _, err := db.Exec(`UPDATE tenants SET notifyhub_url=$1, notifyhub_api_key=$2, updated_at=NOW() WHERE id=$3`,
+			req.NotifyHubURL, req.NotifyHubAPIKey, tenantID); err != nil {
+			log.Printf("ERROR: update tenant %d notifyhub config: %v", tenantID, err)
+			writeJSONError(w, fmt.Sprintf("update notifyhub config: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "updated"}, http.StatusOK)
+
+	default:
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// alertsRulesHandler handles CRUD on /api/alerts/rules.
+// GET    /api/alerts/rules?tenant_id=N       — list rules
+// POST   /api/alerts/rules?tenant_id=N       — create a new rule
+// PUT    /api/alerts/rules?id=N              — update an existing rule
+// DELETE /api/alerts/rules?id=N              — delete a rule
+func alertsRulesHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		tenantIDStr := r.URL.Query().Get("tenant_id")
+		if tenantIDStr == "" {
+			writeJSONError(w, "missing tenant_id query parameter", http.StatusBadRequest)
+			return
+		}
+		var tenantID int
+		if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+			writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+			return
+		}
+
+		rows, err := db.Query(`
+					SELECT id, tenant_id, name, enabled, metric_type, condition_type, threshold,
+						window_seconds, notification_channel, notification_target, notifyhub_template_id, message_template,
+						ses_region, tile_id, alert_type, last_triggered_at, created_at, updated_at
+					FROM alert_rules WHERE tenant_id = $1 ORDER BY id ASC`, tenantID)
+		if err != nil {
+			log.Printf("ERROR: query alert_rules: %v", err)
+			writeJSONError(w, fmt.Sprintf("list alert rules: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		rules := make([]AlertRule, 0)
+		for rows.Next() {
+			var rule AlertRule
+			if err := rows.Scan(&rule.ID, &rule.TenantID, &rule.Name, &rule.Enabled,
+				&rule.MetricType, &rule.ConditionType, &rule.Threshold,
+				&rule.WindowSeconds, &rule.NotificationChannel, &rule.NotificationTarget,
+				&rule.NotifyHubTemplateID, &rule.MessageTemplate, &rule.SESRegion, &rule.TileID, &rule.AlertType, &rule.LastTriggeredAt, &rule.CreatedAt, &rule.UpdatedAt); err != nil {
+				log.Printf("ERROR: scan alert_rule: %v", err)
+				writeJSONError(w, fmt.Sprintf("scan alert rule: %v", err), http.StatusInternalServerError)
+				return
+			}
+			rules = append(rules, rule)
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("ERROR: rows iteration: %v", err)
+			writeJSONError(w, fmt.Sprintf("read alert rules: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, rules, http.StatusOK)
+
+	case http.MethodPost:
+		tenantIDStr := r.URL.Query().Get("tenant_id")
+		if tenantIDStr == "" {
+			writeJSONError(w, "missing tenant_id query parameter", http.StatusBadRequest)
+			return
+		}
+		var tenantID int
+		if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+			writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+			return
+		}
+
+		var rule AlertRule
+		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+			writeJSONError(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			return
+		}
+		if rule.Name == "" {
+			writeJSONError(w, "name is required", http.StatusBadRequest)
+			return
+		}
+
+		err := db.QueryRow(`
+					INSERT INTO alert_rules (tenant_id, name, enabled, metric_type, condition_type, threshold,
+						window_seconds, notification_channel, notification_target, notifyhub_template_id, message_template, ses_region, tile_id, alert_type)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+					RETURNING id, tenant_id, name, enabled, metric_type, condition_type, threshold,
+						window_seconds, notification_channel, notification_target, notifyhub_template_id, message_template,
+						ses_region, tile_id, alert_type, last_triggered_at, created_at, updated_at`,
+			tenantID, rule.Name, rule.Enabled, rule.MetricType, rule.ConditionType, rule.Threshold,
+			rule.WindowSeconds, rule.NotificationChannel, rule.NotificationTarget, rule.NotifyHubTemplateID, rule.MessageTemplate, rule.SESRegion, rule.TileID, rule.AlertType).
+			Scan(&rule.ID, &rule.TenantID, &rule.Name, &rule.Enabled,
+				&rule.MetricType, &rule.ConditionType, &rule.Threshold,
+				&rule.WindowSeconds, &rule.NotificationChannel, &rule.NotificationTarget,
+				&rule.NotifyHubTemplateID, &rule.MessageTemplate, &rule.SESRegion, &rule.TileID, &rule.AlertType, &rule.LastTriggeredAt, &rule.CreatedAt, &rule.UpdatedAt)
+		if err != nil {
+			log.Printf("ERROR: create alert_rule: %v", err)
+			writeJSONError(w, fmt.Sprintf("create alert rule: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, rule, http.StatusCreated)
+
+	case http.MethodPut:
+		idStr := r.URL.Query().Get("id")
+		if idStr == "" {
+			writeJSONError(w, "missing id query parameter", http.StatusBadRequest)
+			return
+		}
+		var id int
+		if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil || id <= 0 {
+			writeJSONError(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+
+		var rule AlertRule
+		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+			writeJSONError(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		_, err := db.Exec(`
+					UPDATE alert_rules SET
+						name=$1, enabled=$2, metric_type=$3, condition_type=$4, threshold=$5,
+						window_seconds=$6, notification_channel=$7, notification_target=$8,
+						notifyhub_template_id=$9, message_template=$10, ses_region=$11, tile_id=$12, alert_type=$13, updated_at=NOW()
+					WHERE id=$14`,
+			rule.Name, rule.Enabled, rule.MetricType, rule.ConditionType, rule.Threshold,
+			rule.WindowSeconds, rule.NotificationChannel, rule.NotificationTarget,
+			rule.NotifyHubTemplateID, rule.MessageTemplate, rule.SESRegion, rule.TileID, rule.AlertType, id)
+		if err != nil {
+			log.Printf("ERROR: update alert_rule %d: %v", id, err)
+			writeJSONError(w, fmt.Sprintf("update alert rule: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "updated"}, http.StatusOK)
+
+	case http.MethodDelete:
+		idStr := r.URL.Query().Get("id")
+		if idStr == "" {
+			writeJSONError(w, "missing id query parameter", http.StatusBadRequest)
+			return
+		}
+		var id int
+		if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil || id <= 0 {
+			writeJSONError(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+
+		res, err := db.Exec(`DELETE FROM alert_rules WHERE id = $1`, id)
+		if err != nil {
+			log.Printf("ERROR: delete alert_rule %d: %v", id, err)
+			writeJSONError(w, fmt.Sprintf("delete alert rule: %v", err), http.StatusInternalServerError)
+			return
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			writeJSONError(w, "alert rule not found", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "deleted"}, http.StatusOK)
+
+	default:
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// codefacPipelinesHandler handles CRUD on /api/codefac-pipelines.
+// GET    /api/codefac-pipelines?tenant_id=N       — list pipelines
+// POST   /api/codefac-pipelines?tenant_id=N       — create
+// PUT    /api/codefac-pipelines?id=N              — update
+// DELETE /api/codefac-pipelines?id=N              — delete
+func codefacPipelinesHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		tenantIDStr := r.URL.Query().Get("tenant_id")
+		if tenantIDStr == "" {
+			writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+			return
+		}
+		var tenantID int
+		if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+			writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+			return
+		}
+		rows, err := db.Query(`
+			SELECT id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
+				payload_template, enabled, last_triggered_at, created_at, updated_at
+							FROM codefac_pipelines WHERE tenant_id = $1 ORDER BY id ASC`, tenantID)
+		if err != nil {
+			log.Printf("ERROR: list codefac_pipelines: %v", err)
+			writeJSONError(w, fmt.Sprintf("list: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		pipelines := make([]CodefacPipeline, 0)
+		for rows.Next() {
+			var p CodefacPipeline
+			if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &p.PipelineName, &p.MetricType,
+				&p.ConditionType, &p.Threshold, &p.PayloadTemplate,
+				&p.Enabled, &p.LastTriggeredAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+				log.Printf("ERROR: scan codefac_pipeline: %v", err)
+				writeJSONError(w, fmt.Sprintf("scan: %v", err), http.StatusInternalServerError)
+				return
+			}
+			pipelines = append(pipelines, p)
+		}
+		writeJSON(w, pipelines, http.StatusOK)
+
+	case http.MethodPost:
+		tenantIDStr := r.URL.Query().Get("tenant_id")
+		if tenantIDStr == "" {
+			writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+			return
+		}
+		var tenantID int
+		if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+			writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+			return
+		}
+
+		var p CodefacPipeline
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			writeJSONError(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			return
+		}
+		if p.Name == "" || p.PipelineName == "" {
+			writeJSONError(w, "name and pipeline_name are required", http.StatusBadRequest)
+			return
+		}
+		if p.PayloadTemplate == "" {
+			p.PayloadTemplate = "{}"
+		}
+		err := db.QueryRow(`
+					INSERT INTO codefac_pipelines (tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
+						payload_template, enabled)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+					RETURNING id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
+						payload_template, enabled, last_triggered_at, created_at, updated_at`,
+			tenantID, p.Name, p.PipelineName, p.MetricType, p.ConditionType, p.Threshold,
+			p.PayloadTemplate, p.Enabled).
+			Scan(&p.ID, &p.TenantID, &p.Name, &p.PipelineName, &p.MetricType, &p.ConditionType,
+				&p.Threshold, &p.PayloadTemplate, &p.Enabled, &p.LastTriggeredAt, &p.CreatedAt, &p.UpdatedAt)
+		if err != nil {
+			log.Printf("ERROR: create codefac_pipeline: %v", err)
+			writeJSONError(w, fmt.Sprintf("create: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, p, http.StatusCreated)
+
+	case http.MethodPut:
+		idStr := r.URL.Query().Get("id")
+		if idStr == "" {
+			writeJSONError(w, "missing id", http.StatusBadRequest)
+			return
+		}
+		var id int
+		if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil || id <= 0 {
+			writeJSONError(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+
+		var p CodefacPipeline
+		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+			writeJSONError(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			return
+		}
+		if p.PayloadTemplate == "" {
+			p.PayloadTemplate = "{}"
+		}
+		err := db.QueryRow(`
+					UPDATE codefac_pipelines SET
+						name=$1, pipeline_name=$2, metric_type=$3, condition_type=$4, threshold=$5,
+						payload_template=$6, enabled=$7, updated_at=NOW()
+					WHERE id=$8
+			RETURNING id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
+							payload_template, enabled, last_triggered_at, created_at, updated_at`,
+			p.Name, p.PipelineName, p.MetricType, p.ConditionType, p.Threshold,
+			p.PayloadTemplate, p.Enabled, id).
+			Scan(&p.ID, &p.TenantID, &p.Name, &p.PipelineName, &p.MetricType, &p.ConditionType,
+				&p.Threshold, &p.PayloadTemplate, &p.Enabled, &p.LastTriggeredAt, &p.CreatedAt, &p.UpdatedAt)
+		if err == sql.ErrNoRows {
+			writeJSONError(w, "codefac pipeline not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			log.Printf("ERROR: update codefac_pipeline: %v", err)
+			writeJSONError(w, fmt.Sprintf("update: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, p, http.StatusOK)
+
+	case http.MethodDelete:
+		idStr := r.URL.Query().Get("id")
+		if idStr == "" {
+			writeJSONError(w, "missing id", http.StatusBadRequest)
+			return
+		}
+		var id int
+		if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil || id <= 0 {
+			writeJSONError(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		_, err := db.Exec(`DELETE FROM codefac_pipelines WHERE id = $1`, id)
+		if err != nil {
+			log.Printf("ERROR: delete codefac_pipeline: %v", err)
+			writeJSONError(w, fmt.Sprintf("delete: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "deleted"}, http.StatusOK)
+
+	default:
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// codefacPipelineTriggerHandler handles POST /api/codefac-pipelines/trigger.
+// It manually triggers a Codefac pipeline for a specific workflow failure.
+func codefacPipelineTriggerHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	tenantIDStr := r.URL.Query().Get("tenant_id")
+	if tenantIDStr == "" {
+		writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+		return
+	}
+	var tenantID int
+	if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+		writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		PipelineID   int    `json:"pipeline_id"`
+		WorkflowID   string `json:"workflow_id"`
+		RunID        string `json:"run_id"`
+		WorkflowType string `json:"workflow_type"`
+		Tasklist     string `json:"tasklist"`
+		Status       string `json:"status"`
+		CloseTime    string `json:"close_time"`
+		Domain       string `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	if req.PipelineID <= 0 {
+		writeJSONError(w, "pipeline_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Load the pipeline
+	var pipe CodefacPipeline
+	err := db.QueryRow(`
+			SELECT id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
+				payload_template, enabled, last_triggered_at, created_at, updated_at
+			FROM codefac_pipelines WHERE id = $1 AND tenant_id = $2`, req.PipelineID, tenantID).
+		Scan(&pipe.ID, &pipe.TenantID, &pipe.Name, &pipe.PipelineName,
+			&pipe.MetricType, &pipe.ConditionType, &pipe.Threshold,
+			&pipe.PayloadTemplate, &pipe.Enabled, &pipe.LastTriggeredAt, &pipe.CreatedAt, &pipe.UpdatedAt)
+	if err == sql.ErrNoRows {
+		writeJSONError(w, "codefac pipeline not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("ERROR: load codefac pipeline %d: %v", req.PipelineID, err)
+		writeJSONError(w, fmt.Sprintf("load pipeline: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Load the tenant to get NotifyHub config
+	tenant, err := tenantStore.GetByID(tenantID)
+	if err != nil {
+		writeJSONError(w, fmt.Sprintf("get tenant: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if tenant == nil {
+		writeJSONError(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+	if tenant.NotifyHubURL == "" || tenant.NotifyHubAPIKey == "" {
+		writeJSONError(w, "tenant NotifyHub is not configured", http.StatusBadRequest)
+		return
+	}
+
+	// Render payload template with workflow data
+	payloadStr := pipe.PayloadTemplate
+	payloadStr = strings.ReplaceAll(payloadStr, "{{pipeline_name}}", pipe.Name)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{domain}}", req.Domain)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{tenant_id}}", fmt.Sprintf("%d", tenantID))
+	payloadStr = strings.ReplaceAll(payloadStr, "{{workflow_id}}", req.WorkflowID)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{run_id}}", req.RunID)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{workflow_type}}", req.WorkflowType)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{tasklist}}", req.Tasklist)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{status}}", req.Status)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{close_time}}", req.CloseTime)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{idempotency_key}}", newUUIDv4())
+
+	// Send via NotifyHub
+	notifyPayload := map[string]interface{}{
+		"idempotency_key": newUUIDv4(),
+		"type":            "alert",
+		"channels":        []string{"webhook"},
+		"forced_vendor":   "codefac",
+		"subject":         fmt.Sprintf("[MANUAL TRIGGER] %s - %s", pipe.Name, req.WorkflowType),
+		"body":            payloadStr,
+		"recipient":       pipe.PipelineName,
+	}
+	notifyPayload["template_variables"] = map[string]string{
+		"pipeline_name": pipe.Name,
+		"workflow_id":   req.WorkflowID,
+		"run_id":        req.RunID,
+		"workflow_type": req.WorkflowType,
+		"status":        req.Status,
+		"domain":        req.Domain,
+	}
+
+	payloadBytes, _ := json.Marshal(notifyPayload)
+	parsedBase, _ := url.Parse(tenant.NotifyHubURL)
+	stripped := &url.URL{Scheme: parsedBase.Scheme, Host: parsedBase.Host}
+	notifyURL := stripped.JoinPath("/v1/notifications").String()
+	httpReq, _ := http.NewRequest(http.MethodPost, notifyURL, bytes.NewReader(payloadBytes))
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-API-Key", tenant.NotifyHubAPIKey)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(httpReq)
+	triggerStatus := "sent"
+	errMsg := ""
+	if err != nil {
+		triggerStatus = "failed"
+		errMsg = err.Error()
+	} else {
+		if resp.StatusCode >= 400 {
+			triggerStatus = "failed"
+			respBody, _ := io.ReadAll(resp.Body)
+			errMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		}
+		resp.Body.Close()
+	}
+
+	// Record in alert_history
+	now := time.Now()
+	db.Exec(`
+			INSERT INTO alert_history (tenant_id, tile_id, metric_type,
+				metric_value, threshold, condition_type, channel, recipient, status, error_message, sent_at, workflow_id, run_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		tenantID, "recent-failures", "workflow_failure", 1.0, pipe.Threshold,
+		pipe.ConditionType, "pipeline", pipe.PipelineName, triggerStatus, errMsg, now, req.WorkflowID, req.RunID)
+
+	// Update last_triggered_at
+	db.Exec(`UPDATE codefac_pipelines SET last_triggered_at = $1 WHERE id = $2`, now, pipe.ID)
+
+	log.Printf("MANUAL CODEFAC TRIGGER: tenant %d pipeline %q workflow %s/%s -> %s (err: %s)",
+		tenantID, pipe.Name, req.WorkflowID, req.RunID, triggerStatus, errMsg)
+
+	if triggerStatus == "failed" {
+		writeJSONError(w, fmt.Sprintf("trigger failed: %s", errMsg), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"status":      "triggered",
+		"pipeline":    pipe.Name,
+		"workflow_id": req.WorkflowID,
+	}, http.StatusOK)
+}
+
+// alertsRulesTestHandler handles POST on /api/alerts/rules/test.
+func alertsRulesTestHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	tenantIDStr := r.URL.Query().Get("tenant_id")
+	if tenantIDStr == "" {
+		writeJSONError(w, "missing tenant_id query parameter", http.StatusBadRequest)
+		return
+	}
+	var tenantID int
+	if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+		writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		RuleID      int    `json:"rule_id"`
+		TestMessage string `json:"message"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Load the tenant to get NotifyHub config
+	tenant, err := tenantStore.GetByID(tenantID)
+	if err != nil {
+		log.Printf("ERROR: get tenant %d: %v", tenantID, err)
+		writeJSONError(w, fmt.Sprintf("get tenant: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if tenant == nil {
+		writeJSONError(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+	if tenant.NotifyHubURL == "" {
+		writeJSONError(w, "tenant notifyhub_url is not configured", http.StatusBadRequest)
+		return
+	}
+
+	// Load the alert rule
+	var rule AlertRule
+	err = db.QueryRow(`
+		SELECT id, tenant_id, name, enabled, metric_type, condition_type, threshold,
+			window_seconds, notification_channel, notification_target, notifyhub_template_id, tile_id,
+			alert_type, last_triggered_at, created_at, updated_at
+		FROM alert_rules WHERE id = $1 AND tenant_id = $2`, req.RuleID, tenantID).
+		Scan(&rule.ID, &rule.TenantID, &rule.Name, &rule.Enabled,
+			&rule.MetricType, &rule.ConditionType, &rule.Threshold,
+			&rule.WindowSeconds, &rule.NotificationChannel, &rule.NotificationTarget,
+			&rule.NotifyHubTemplateID, &rule.TileID, &rule.AlertType, &rule.LastTriggeredAt, &rule.CreatedAt, &rule.UpdatedAt)
+	if err == sql.ErrNoRows {
+		writeJSONError(w, "alert rule not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("ERROR: get alert_rule %d: %v", req.RuleID, err)
+		writeJSONError(w, fmt.Sprintf("get alert rule: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Get current metric value from dashboard cache for real data
+	currentValue := ""
+	metricInfo := ""
+	if val, ok := dashboardCache.Load(tenantID); ok {
+		entry := val.(*dashboardCacheEntry)
+		entry.mu.RLock()
+		if entry.Data != nil {
+			d := entry.Data
+			switch rule.MetricType {
+			case "failure_rate":
+				currentValue = fmt.Sprintf("%s", d.Rates1d.FailurePct)
+				metricInfo = fmt.Sprintf("Current failure rate: %s (threshold: %s %.2f)", currentValue, rule.ConditionType, rule.Threshold)
+			case "success_rate":
+				currentValue = fmt.Sprintf("%s", d.Rates1d.SuccessPct)
+				metricInfo = fmt.Sprintf("Current success rate: %s (threshold: %s %.2f)", currentValue, rule.ConditionType, rule.Threshold)
+			case "volume":
+				currentValue = fmt.Sprintf("%d", d.Rates1d.Total)
+				metricInfo = fmt.Sprintf("Current volume: %s (threshold: %s %.2f)", currentValue, rule.ConditionType, rule.Threshold)
+			case "latency_p100":
+				maxLatency := int64(0)
+				for _, w := range d.P100ByWorkflow {
+					if w.P100LatencyMs > maxLatency {
+						maxLatency = w.P100LatencyMs
+					}
+				}
+				if maxLatency > 0 {
+					currentValue = fmt.Sprintf("%d ms", maxLatency)
+				} else {
+					currentValue = "0 ms"
+				}
+				metricInfo = fmt.Sprintf("Current P100 latency: %s (threshold: %s %.2f)", currentValue, rule.ConditionType, rule.Threshold)
+			case "workflow_failure":
+				currentValue = fmt.Sprintf("%d", d.TotalFailed)
+				metricInfo = fmt.Sprintf("Current workflow failures: %s (threshold: %s %.2f)", currentValue, rule.ConditionType, rule.Threshold)
+			}
+		}
+		entry.mu.RUnlock()
+	}
+
+	// Build the notification payload
+	testMsg := req.TestMessage
+	if testMsg == "" && metricInfo != "" {
+		testMsg = fmt.Sprintf("Alert: %s\nMetric: %s\n%s\nWindow: %ds\nStatus: TRIGGERED",
+			rule.Name, rule.MetricType, metricInfo, rule.WindowSeconds)
+	} else if testMsg == "" {
+		testMsg = "This is a test notification from the SLO Dashboard alerts system."
+	}
+
+	notifyPayload := map[string]interface{}{
+		"idempotency_key": newUUIDv4(),
+		"type":            "test",
+		"channels":        []string{rule.NotificationChannel},
+		"subject":         fmt.Sprintf("[TEST] Alert Rule: %s", rule.Name),
+		"body":            testMsg,
+		"recipient":       rule.NotificationTarget,
+	}
+	if rule.NotifyHubTemplateID != "" {
+		notifyPayload["template_id"] = rule.NotifyHubTemplateID
+	}
+	if rule.NotificationChannel == "slack" && rule.NotificationTarget != "" {
+		notifyPayload["slack_channel"] = rule.NotificationTarget
+	}
+	notifyPayload["template_variables"] = map[string]string{
+		"rule_name":      rule.Name,
+		"metric_type":    rule.MetricType,
+		"condition_type": rule.ConditionType,
+		"threshold":      fmt.Sprintf("%.2f", rule.Threshold),
+		"window_seconds": fmt.Sprintf("%d", rule.WindowSeconds),
+		"test":           "true",
+	}
+
+	body, err := json.Marshal(notifyPayload)
+	if err != nil {
+		log.Printf("ERROR: marshal notify payload: %v", err)
+		writeJSONError(w, fmt.Sprintf("marshal payload: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Use only the scheme+host from NotifyHubURL (strip any existing path)
+	// to avoid duplicate path segments when appending /v1/...
+	parsedBase, err := url.Parse(tenant.NotifyHubURL)
+	if err != nil {
+		log.Printf("ERROR: parse notifyhub URL %q: %v", tenant.NotifyHubURL, err)
+		writeJSONError(w, fmt.Sprintf("invalid notifyhub_url: %v", err), http.StatusInternalServerError)
+		return
+	}
+	stripped := &url.URL{Scheme: parsedBase.Scheme, Host: parsedBase.Host}
+	notifyURL := stripped.JoinPath("/v1/notifications").String()
+	reqHTTP, err := http.NewRequest(http.MethodPost, notifyURL, bytes.NewReader(body))
+	if err != nil {
+		log.Printf("ERROR: create notify request: %v", err)
+		writeJSONError(w, fmt.Sprintf("create request: %v", err), http.StatusInternalServerError)
+		return
+	}
+	reqHTTP.Header.Set("Content-Type", "application/json")
+	reqHTTP.Header.Set("X-API-Key", tenant.NotifyHubAPIKey)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(reqHTTP)
+	if err != nil {
+		log.Printf("ERROR: notify request failed: %v", err)
+		writeJSONError(w, fmt.Sprintf("notify request failed: %v", err), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("ERROR: read notify response: %v", err)
+		writeJSONError(w, fmt.Sprintf("read response: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if resp.StatusCode >= 400 {
+		log.Printf("ERROR: notify returned status %d: %s", resp.StatusCode, string(respBody))
+		writeJSONError(w, fmt.Sprintf("notify returned status %d", resp.StatusCode), http.StatusBadGateway)
+		return
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"status":   "sent",
+		"response": string(respBody),
+	}, http.StatusOK)
+}
+
+// notificationChannelsHandler handles GET and PUT on /api/notification-channels.
+// GET  /api/notification-channels?tenant_id=N — returns all channel configs for tenant
+// PUT  /api/notification-channels?tenant_id=N — upserts channel configs (body is array of {channel, recipients[]})
+func notificationChannelsHandler(w http.ResponseWriter, r *http.Request) {
+	tenantIDStr := r.URL.Query().Get("tenant_id")
+	if tenantIDStr == "" {
+		writeJSONError(w, "missing tenant_id query parameter", http.StatusBadRequest)
+		return
+	}
+	var tenantID int
+	if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+		writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		scopeFilter := r.URL.Query().Get("scope")
+		var rows *sql.Rows
+		var err error
+		if scopeFilter != "" {
+			rows, err = db.Query(
+				`SELECT id, tenant_id, channel, scope, recipients, created_at, updated_at
+                 FROM notification_channels WHERE tenant_id = $1 AND scope = $2 ORDER BY channel, scope`, tenantID, scopeFilter)
+		} else {
+			rows, err = db.Query(
+				`SELECT id, tenant_id, channel, scope, recipients, created_at, updated_at
+                 FROM notification_channels WHERE tenant_id = $1 ORDER BY channel, scope`, tenantID)
+		}
+		if err != nil {
+			log.Printf("ERROR: list notification_channels: %v", err)
+			writeJSONError(w, fmt.Sprintf("list channels: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		channels := make([]NotificationChannel, 0)
+		for rows.Next() {
+			var c NotificationChannel
+			if err := rows.Scan(&c.ID, &c.TenantID, &c.Channel, &c.Scope, pq.Array(&c.Recipients), &c.CreatedAt, &c.UpdatedAt); err != nil {
+				log.Printf("ERROR: scan notification_channel: %v", err)
+				writeJSONError(w, fmt.Sprintf("scan channel: %v", err), http.StatusInternalServerError)
+				return
+			}
+			channels = append(channels, c)
+		}
+		if err := rows.Err(); err != nil {
+			writeJSONError(w, fmt.Sprintf("read channels: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, channels, http.StatusOK)
+
+	case http.MethodPut:
+		var req []struct {
+			Channel    string   `json:"channel"`
+			Scope      string   `json:"scope"`
+			Recipients []string `json:"recipients"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		for _, ch := range req {
+			if ch.Channel == "" {
+				continue
+			}
+			if ch.Scope == "" {
+				ch.Scope = "alert"
+			}
+			if ch.Recipients == nil {
+				ch.Recipients = []string{}
+			}
+			_, err := db.Exec(`
+					INSERT INTO notification_channels (tenant_id, channel, scope, recipients, updated_at)
+					VALUES ($1, $2, $3, $4, NOW())
+					ON CONFLICT (tenant_id, channel, scope)
+					DO UPDATE SET recipients = $4, updated_at = NOW()`,
+				tenantID, ch.Channel, ch.Scope, pq.Array(ch.Recipients))
+			if err != nil {
+				log.Printf("ERROR: upsert notification_channel %s: %v", ch.Channel, err)
+				writeJSONError(w, fmt.Sprintf("save channel %s: %v", ch.Channel, err), http.StatusInternalServerError)
+				return
+			}
+		}
+
+		writeJSON(w, map[string]string{"status": "saved"}, http.StatusOK)
+
+	default:
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// reportsHandler handles CRUD on /api/reports.
+// GET    /api/reports?tenant_id=N — list reports
+// POST   /api/reports?tenant_id=N — create a report
+// PUT    /api/reports?id=N        — update a report
+// DELETE /api/reports?id=N        — delete a report
+func reportsHandler(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		tenantIDStr := r.URL.Query().Get("tenant_id")
+		if tenantIDStr == "" {
+			writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+			return
+		}
+		var tenantID int
+		if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+			writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+			return
+		}
+
+		rows, err := db.Query(`
+				SELECT id, tenant_id, name, enabled, report_type, frequency, day_of_week, day_of_month,
+					channel, recipients, send_time, timezone, message_template, client_name, workflow_top_n, regions, last_sent_at, created_at, updated_at
+				FROM reports WHERE tenant_id = $1 ORDER BY id ASC`, tenantID)
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("list reports: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		reports := make([]Report, 0)
+		for rows.Next() {
+			var r Report
+			if err := rows.Scan(&r.ID, &r.TenantID, &r.Name, &r.Enabled,
+				&r.ReportType, &r.Frequency, &r.DayOfWeek, &r.DayOfMonth,
+				&r.Channel, pq.Array(&r.Recipients), &r.SendTime, &r.Timezone, &r.MessageTemplate, &r.ClientName, &r.WorkflowTopN, pq.Array(&r.Regions), &r.LastSentAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
+				writeJSONError(w, fmt.Sprintf("scan report: %v", err), http.StatusInternalServerError)
+				return
+			}
+			reports = append(reports, r)
+		}
+		writeJSON(w, reports, http.StatusOK)
+
+	case http.MethodPost:
+		tenantIDStr := r.URL.Query().Get("tenant_id")
+		if tenantIDStr == "" {
+			writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+			return
+		}
+		var tenantID int
+		if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+			writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+			return
+		}
+
+		var req Report
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, fmt.Sprintf("invalid body: %v", err), http.StatusBadRequest)
+			return
+		}
+		if req.Name == "" {
+			writeJSONError(w, "name is required", http.StatusBadRequest)
+			return
+		}
+		if req.Frequency == "" {
+			req.Frequency = "daily"
+		}
+		if req.ReportType == "" {
+			req.ReportType = "slo_summary"
+		}
+		if req.Channel == "" {
+			req.Channel = "email"
+		}
+		if req.Recipients == nil {
+			req.Recipients = []string{}
+		}
+		if req.SendTime == "" {
+			req.SendTime = "08:00"
+		}
+		if req.Timezone == "" {
+			req.Timezone = "UTC"
+		}
+
+		var report Report
+		err := db.QueryRow(`
+				INSERT INTO reports (tenant_id, name, enabled, report_type, frequency, day_of_week, day_of_month, channel, recipients, send_time, timezone, message_template, client_name, workflow_top_n, regions)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+				RETURNING id, tenant_id, name, enabled, report_type, frequency, day_of_week, day_of_month,
+					channel, recipients, send_time, timezone, message_template, client_name, workflow_top_n, regions, last_sent_at, created_at, updated_at`,
+			tenantID, req.Name, req.Enabled, req.ReportType, req.Frequency,
+			req.DayOfWeek, req.DayOfMonth, req.Channel, pq.Array(req.Recipients),
+			req.SendTime, req.Timezone, req.MessageTemplate, req.ClientName, req.WorkflowTopN, pq.Array(req.Regions)).
+			Scan(&report.ID, &report.TenantID, &report.Name, &report.Enabled,
+				&report.ReportType, &report.Frequency, &report.DayOfWeek, &report.DayOfMonth,
+				&report.Channel, pq.Array(&report.Recipients), &report.SendTime, &report.Timezone,
+				&report.MessageTemplate, &report.ClientName, &report.WorkflowTopN, pq.Array(&report.Regions), &report.LastSentAt, &report.CreatedAt, &report.UpdatedAt)
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("create report: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, report, http.StatusCreated)
+
+	case http.MethodPut:
+		idStr := r.URL.Query().Get("id")
+		if idStr == "" {
+			writeJSONError(w, "missing id", http.StatusBadRequest)
+			return
+		}
+		var id int
+		if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil || id <= 0 {
+			writeJSONError(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+
+		var req Report
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, fmt.Sprintf("invalid body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		_, err := db.Exec(`
+			UPDATE reports SET name=$1, enabled=$2, report_type=$3, frequency=$4,
+				day_of_week=$5, day_of_month=$6, channel=$7, recipients=$8,
+				send_time=$9, timezone=$10, message_template=$11, regions=$12, client_name=$13, workflow_top_n=$14, updated_at=NOW()
+			WHERE id=$15`,
+			req.Name, req.Enabled, req.ReportType, req.Frequency,
+			req.DayOfWeek, req.DayOfMonth, req.Channel, pq.Array(req.Recipients),
+			req.SendTime, req.Timezone, req.MessageTemplate, pq.Array(req.Regions), req.ClientName, req.WorkflowTopN, id)
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("update report: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "updated"}, http.StatusOK)
+
+	case http.MethodDelete:
+		idStr := r.URL.Query().Get("id")
+		if idStr == "" {
+			writeJSONError(w, "missing id", http.StatusBadRequest)
+			return
+		}
+		var id int
+		if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil || id <= 0 {
+			writeJSONError(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+
+		res, err := db.Exec(`DELETE FROM reports WHERE id = $1`, id)
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("delete report: %v", err), http.StatusInternalServerError)
+			return
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			writeJSONError(w, "report not found", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "deleted"}, http.StatusOK)
+
+	default:
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// reportTriggerHandler handles POST /api/reports/trigger.
+// It immediately generates and sends a report via NotifyHub.
+func reportTriggerHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		writeJSONError(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	var id int
+	if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil || id <= 0 {
+		writeJSONError(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	// Load the report
+	var report Report
+	err := db.QueryRow(`
+		SELECT id, tenant_id, name, enabled, report_type, frequency, day_of_week, day_of_month,
+			channel, recipients, send_time, timezone, message_template, client_name, workflow_top_n, regions, last_sent_at, created_at, updated_at
+		FROM reports WHERE id = $1`, id).
+		Scan(&report.ID, &report.TenantID, &report.Name, &report.Enabled,
+			&report.ReportType, &report.Frequency, &report.DayOfWeek, &report.DayOfMonth,
+			&report.Channel, pq.Array(&report.Recipients), &report.SendTime, &report.Timezone,
+			&report.MessageTemplate, &report.ClientName, &report.WorkflowTopN, pq.Array(&report.Regions), &report.LastSentAt, &report.CreatedAt, &report.UpdatedAt)
+	if err == sql.ErrNoRows {
+		writeJSONError(w, "report not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("ERROR: load report %d: %v", id, err)
+		writeJSONError(w, fmt.Sprintf("load report: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Load the tenant to get NotifyHub config
+	tenant, err := tenantStore.GetByID(report.TenantID)
+	if err != nil {
+		writeJSONError(w, fmt.Sprintf("get tenant: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if tenant == nil {
+		writeJSONError(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+	if tenant.NotifyHubURL == "" || tenant.NotifyHubAPIKey == "" {
+		writeJSONError(w, "tenant NotifyHub is not configured", http.StatusBadRequest)
+		return
+	}
+
+	// Try to get cached dashboard data for context
+	dashboardInfo := ""
+	if val, ok := dashboardCache.Load(report.TenantID); ok {
+		entry := val.(*dashboardCacheEntry)
+		entry.mu.RLock()
+		if entry.Data != nil {
+			d := entry.Data
+			windowCount := 0
+			if len(d.Windows) > 0 {
+				windowCount = len(d.Windows)
+			}
+			dashboardInfo = fmt.Sprintf("Windows: %d | Success rate: %s | Failure rate: %s | Volume: %d",
+				windowCount, d.Rates1d.SuccessPct, d.Rates1d.FailurePct, d.Rates1d.Total)
+		}
+		entry.mu.RUnlock()
+	}
+
+	// Build report body
+	now := time.Now().Format("2006-01-02 15:04:05")
+	subject := fmt.Sprintf("[REPORT] %s - %s", report.Name, report.ReportType)
+
+	// Gather SES metrics for SES Delivery Reports
+	sesInfo := ""
+	if report.ReportType == "ses_delivery_report" {
+		regions := report.Regions
+		if len(regions) == 0 {
+			regions = getSESRegions()
+		}
+		var totalSends, totalBounces, totalComplaints, totalRejects int64
+		activeRegions := []string{}
+		for _, r := range regions {
+			if val, ok := sesCache.Load(r); ok {
+				entry := val.(*sesCacheEntry)
+				entry.mu.RLock()
+				if entry.Data != nil {
+					totalSends += entry.Data.Sends
+					totalBounces += entry.Data.Bounces
+					totalComplaints += entry.Data.Complaints
+					totalRejects += entry.Data.Rejects
+					activeRegions = append(activeRegions, r)
+				}
+				entry.mu.RUnlock()
+			}
+		}
+		bounceRate := 0.0
+		complaintRate := 0.0
+		errorRate := 0.0
+		if totalSends > 0 {
+			bounceRate = float64(totalBounces) / float64(totalSends) * 100
+			complaintRate = float64(totalComplaints) / float64(totalSends) * 100
+			errorRate = float64(totalBounces+totalComplaints+totalRejects) / float64(totalSends) * 100
+		}
+		sesInfo = fmt.Sprintf("SES Regions: %s\nTotal Sends: %d\nBounces: %d (%.2f%%)\nComplaints: %d (%.2f%%)\nRejects: %d\nError Rate: %.2f%%",
+			strings.Join(activeRegions, ", "), totalSends, totalBounces, bounceRate,
+			totalComplaints, complaintRate, totalRejects, errorRate)
+	}
+
+	// Gather P100 latency data for P100 Latency Report
+	p100Info := ""
+	if report.ReportType == "p100_latency_report" {
+		topN := report.WorkflowTopN
+		if topN <= 0 {
+			topN = 10
+		}
+		if val, ok := dashboardCache.Load(report.TenantID); ok {
+			entry := val.(*dashboardCacheEntry)
+			entry.mu.RLock()
+			if entry.Data != nil && len(entry.Data.P100ByWorkflow) > 0 {
+				d := entry.Data
+				// Sort by P100 latency descending
+				sorted := make([]P100ByWorkflowEntry, len(d.P100ByWorkflow))
+				copy(sorted, d.P100ByWorkflow)
+				sort.Slice(sorted, func(i, j int) bool {
+					return sorted[i].P100LatencyMs > sorted[j].P100LatencyMs
+				})
+				if len(sorted) > topN {
+					sorted = sorted[:topN]
+				}
+				var lines []string
+				lines = append(lines, fmt.Sprintf("*Top %d Workflows by P100 Latency:*", topN))
+				lines = append(lines, "```")
+				lines = append(lines, fmt.Sprintf("%-3s %-40s %-10s %s", "#", "Workflow Type", "Count", "P100 Latency"))
+				for i, entry := range sorted {
+					latency := "-"
+					if entry.P100LatencyMs > 0 {
+						if entry.P100LatencyMs < 1000 {
+							latency = fmt.Sprintf("%d ms", entry.P100LatencyMs)
+						} else if entry.P100LatencyMs < 60000 {
+							latency = fmt.Sprintf("%.1f s", float64(entry.P100LatencyMs)/1000)
+						} else {
+							latency = fmt.Sprintf("%dm %ds", entry.P100LatencyMs/60000, (entry.P100LatencyMs%60000)/1000)
+						}
+					}
+					lines = append(lines, fmt.Sprintf("%-3d %-40s %-10d %s", i+1, entry.WorkflowType, entry.Count, latency))
+				}
+				lines = append(lines, "```")
+				p100Info = strings.Join(lines, "\n")
+			}
+			entry.mu.RUnlock()
+		}
+		if p100Info == "" {
+			p100Info = fmt.Sprintf("No P100 latency data available for top %d workflows.", topN)
+		}
+	}
+
+	// Use custom message template if available
+	body := ""
+	if report.MessageTemplate != "" {
+		body = report.MessageTemplate
+		body = strings.ReplaceAll(body, "{{report_name}}", report.Name)
+		body = strings.ReplaceAll(body, "{{report_type}}", report.ReportType)
+		body = strings.ReplaceAll(body, "{{frequency}}", report.Frequency)
+		body = strings.ReplaceAll(body, "{{channel}}", report.Channel)
+		body = strings.ReplaceAll(body, "{{recipients}}", strings.Join(report.Recipients, ", "))
+		body = strings.ReplaceAll(body, "{{timestamp}}", now)
+		body = strings.ReplaceAll(body, "{{dashboard_info}}", dashboardInfo)
+		body = strings.ReplaceAll(body, "{{ses_info}}", sesInfo)
+		body = strings.ReplaceAll(body, "{{p100_info}}", p100Info)
+		body = strings.ReplaceAll(body, "{{workflow_top_n}}", fmt.Sprintf("%d", report.WorkflowTopN))
+		body = strings.ReplaceAll(body, "{{client_name}}", report.ClientName)
+	} else {
+		if report.ReportType == "ses_delivery_report" && sesInfo != "" {
+			body = fmt.Sprintf("Report: %s\nType: %s\nGenerated: %s\n\n%s\n\n%s",
+				report.Name, report.ReportType, now, dashboardInfo, sesInfo)
+		} else if report.ReportType == "p100_latency_report" && p100Info != "" {
+			body = fmt.Sprintf("Report: %s\nType: %s\nGenerated: %s\n\n%s\n\nSent via %s to: %s",
+				report.Name, report.ReportType, now, p100Info, report.Channel, strings.Join(report.Recipients, ", "))
+		} else {
+			body = fmt.Sprintf("Report: %s\nType: %s\nGenerated: %s\n\n%s\n\nSent via %s to: %s",
+				report.Name, report.ReportType, now, dashboardInfo, report.Channel, strings.Join(report.Recipients, ", "))
+		}
+	}
+
+	// Send to each recipient via NotifyHub
+	status := "sent"
+	errMsg := ""
+	for _, recipient := range report.Recipients {
+		notifyPayload := map[string]interface{}{
+			"idempotency_key": newUUIDv4(),
+			"type":            "report",
+			"channels":        []string{report.Channel},
+			"subject":         subject,
+			"body":            body,
+			"recipient":       recipient,
+		}
+		notifyPayload["template_variables"] = map[string]string{
+			"report_name": report.Name,
+			"report_type": report.ReportType,
+			"timestamp":   now,
+		}
+
+		payloadBytes, _ := json.Marshal(notifyPayload)
+		parsedBase, _ := url.Parse(tenant.NotifyHubURL)
+		stripped := &url.URL{Scheme: parsedBase.Scheme, Host: parsedBase.Host}
+		notifyURL := stripped.JoinPath("/v1/notifications").String()
+		httpReq, _ := http.NewRequest(http.MethodPost, notifyURL, bytes.NewReader(payloadBytes))
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("X-API-Key", tenant.NotifyHubAPIKey)
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			status = "failed"
+			errMsg = err.Error()
+			continue
+		}
+		if resp.StatusCode >= 400 {
+			respBody, _ := io.ReadAll(resp.Body)
+			status = "failed"
+			errMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		}
+		resp.Body.Close()
+
+		// Record in alert_history for this recipient
+		_, err2 := db.Exec(`
+			INSERT INTO alert_history (tenant_id, tile_id, metric_type, metric_value,
+				threshold, condition_type, channel, recipient, status, error_message, sent_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+			report.TenantID, fmt.Sprintf("report-%d", report.ID), report.ReportType, float64(len(report.Recipients)),
+			0, "", "report", recipient, status, errMsg, time.Now())
+		if err2 != nil {
+			log.Printf("ERROR: insert alert_history for report %d / %s: %v", report.ID, recipient, err2)
+		}
+	}
+
+	// Update last_sent_at if at least one succeeded
+	if status == "sent" {
+		db.Exec(`UPDATE reports SET last_sent_at = NOW() WHERE id = $1`, id)
+	}
+
+	if status == "failed" {
+		log.Printf("ERROR: report trigger %d failed: %s", id, errMsg)
+		writeJSONError(w, fmt.Sprintf("report trigger failed: %s", errMsg), http.StatusBadGateway)
+		return
+	}
+
+	log.Printf("REPORT TRIGGERED: report %d %q -> sent to %d recipients", id, report.Name, len(report.Recipients))
+	writeJSON(w, map[string]interface{}{
+		"status":      "sent",
+		"report_id":   id,
+		"report_name": report.Name,
+		"recipients":  len(report.Recipients),
+	}, http.StatusOK)
+}
+
+// alertHistoryHandler handles GET on /api/alerts/history.
+// GET /api/alerts/history?tenant_id=N&limit=50&offset=0 — list alert history
+func alertHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	tenantIDStr := r.URL.Query().Get("tenant_id")
+	if tenantIDStr == "" {
+		writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+		return
+	}
+	var tenantID int
+	if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+		writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+		return
+	}
+
+	limit := 50
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 200 {
+			limit = l
+		}
+	}
+
+	offset := 0
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	rows, err := db.Query(`
+		SELECT id, tenant_id, alert_rule_id, tile_id, metric_type, metric_value, threshold,
+			condition_type, channel, recipient, status, error_message, sent_at, created_at, workflow_id, run_id
+		FROM alert_history WHERE tenant_id = $1
+		ORDER BY sent_at DESC LIMIT $2 OFFSET $3`, tenantID, limit, offset)
+	if err != nil {
+		writeJSONError(w, fmt.Sprintf("list alert history: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	history := make([]AlertHistory, 0)
+	for rows.Next() {
+		var h AlertHistory
+		if err := rows.Scan(&h.ID, &h.TenantID, &h.AlertRuleID, &h.TileID,
+			&h.MetricType, &h.MetricValue, &h.Threshold, &h.ConditionType,
+			&h.Channel, &h.Recipient, &h.Status, &h.ErrorMessage, &h.SentAt, &h.CreatedAt, &h.WorkflowID, &h.RunID); err != nil {
+			writeJSONError(w, fmt.Sprintf("scan alert history: %v", err), http.StatusInternalServerError)
+			return
+		}
+		history = append(history, h)
+	}
+
+	// Also get total count
+	var total int
+	db.QueryRow(`SELECT COUNT(*) FROM alert_history WHERE tenant_id = $1`, tenantID).Scan(&total)
+
+	writeJSON(w, map[string]interface{}{
+		"history": history,
+		"total":   total,
+		"limit":   limit,
+		"offset":  offset,
+	}, http.StatusOK)
+}
+
+// ============================================================
 // Main
 // ============================================================
+
+// startDashboardRefresher periodically queries ES for each tenant and caches the result.
+func startDashboardRefresher(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	log.Printf("Starting dashboard data refresher (every 30s)")
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Dashboard refresher stopped")
+			return
+		case <-ticker.C:
+			tenants, err := tenantStore.List()
+			if err != nil {
+				log.Printf("ERROR: dashboard refresh: list tenants: %v", err)
+				continue
+			}
+			for _, t := range tenants {
+				cfg := Config{
+					ES:         t.ESEndpoint,
+					Index:      t.ESIndex,
+					DomainID:   t.DomainID,
+					DomainName: t.DomainName,
+					ESApiKey:   t.ESApiKey,
+				}
+				msResp, err := queryElasticsearch(cfg, 20, 3600, []int{1, 5},
+					[]string{}, 0, 0, 0, "WorkflowType", []int{}, "")
+				if err != nil {
+					log.Printf("ERROR: dashboard refresh tenant %d: %v", t.ID, err)
+					continue
+				}
+				apiResp, totalFailed := buildResponse(cfg, t.ID, msResp, 20, []int{1, 5}, "WorkflowType", "")
+
+				entry := &dashboardCacheEntry{}
+				entry.mu.Lock()
+				entry.Data = &apiResp
+				entry.TotalFailed = totalFailed
+				entry.UpdatedAt = time.Now()
+				entry.mu.Unlock()
+
+				dashboardCache.Store(t.ID, entry)
+			}
+		}
+	}
+}
+
+// startSESRefresher periodically queries CloudWatch for each configured region and caches the result.
+func startSESRefresher(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	log.Printf("Starting SES data refresher (every 60s)")
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("SES refresher stopped")
+			return
+		case <-ticker.C:
+			regions := getSESRegions()
+			now := time.Now().UTC()
+			startTime := now.Add(-1 * time.Hour)
+			sesCfg := getSESCloudWatchConfig()
+
+			for _, region := range regions {
+				sesCfg.Region = region
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				result, err := queryCloudWatchSESMetrics(ctx, sesCfg, 60, startTime, now)
+				cancel()
+				if err != nil {
+					log.Printf("ERROR: SES refresh region %s: %v", region, err)
+					continue
+				}
+				result.DomainName = getEnv("SES_DOMAIN_NAME", "ses")
+
+				entry := &sesCacheEntry{}
+				entry.mu.Lock()
+				entry.Data = result
+				entry.UpdatedAt = time.Now()
+				entry.mu.Unlock()
+
+				sesCache.Store(region, entry)
+			}
+		}
+	}
+}
+
+// startAlertEvaluator periodically checks alert rules against cached data and sends notifications.
+func startAlertEvaluator(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	log.Printf("Starting alert evaluator (every 30s)")
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Alert evaluator stopped")
+			return
+		case <-ticker.C:
+			tenants, err := tenantStore.List()
+			if err != nil {
+				log.Printf("ERROR: alert eval: list tenants: %v", err)
+				continue
+			}
+			for _, t := range tenants {
+				// Load alert rules for this tenant
+				rows, err := db.Query(`
+                    SELECT id, tenant_id, name, enabled, metric_type, condition_type, threshold,
+                        window_seconds, notification_channel, notification_target, notifyhub_template_id,
+                        ses_region, tile_id, alert_type, last_triggered_at
+                    FROM alert_rules WHERE tenant_id = $1 AND enabled = true`, t.ID)
+				if err != nil {
+					log.Printf("ERROR: alert eval: query rules tenant %d: %v", t.ID, err)
+					continue
+				}
+
+				var rules []AlertRule
+				for rows.Next() {
+					var r AlertRule
+					if err := rows.Scan(&r.ID, &r.TenantID, &r.Name, &r.Enabled,
+						&r.MetricType, &r.ConditionType, &r.Threshold,
+						&r.WindowSeconds, &r.NotificationChannel, &r.NotificationTarget,
+						&r.NotifyHubTemplateID, &r.SESRegion, &r.TileID, &r.AlertType, &r.LastTriggeredAt); err != nil {
+						log.Printf("ERROR: alert eval: scan rule: %v", err)
+						continue
+					}
+					rules = append(rules, r)
+				}
+				rows.Close()
+
+				if len(rules) == 0 {
+					continue
+				}
+
+				// Get cached dashboard data
+				cacheVal, ok := dashboardCache.Load(t.ID)
+				if !ok {
+					continue
+				}
+				entry := cacheVal.(*dashboardCacheEntry)
+				entry.mu.RLock()
+				data := entry.Data
+				entry.mu.RUnlock()
+				if data == nil {
+					continue
+				}
+
+				// Evaluate each rule
+				for _, rule := range rules {
+					var metricValue float64
+					var metricLabel string
+					found := false
+
+					switch rule.MetricType {
+					case "success_rate":
+						if data.Rates1d.Total > 0 && data.Rates1d.SuccessPct != "N/A" {
+							if v, err := strconv.ParseFloat(data.Rates1d.SuccessPct, 64); err == nil {
+								metricValue = v
+								metricLabel = "success_rate"
+								found = true
+							}
+						}
+					case "failure_rate":
+						if data.Rates1d.Total > 0 && data.Rates1d.FailurePct != "N/A" {
+							if v, err := strconv.ParseFloat(data.Rates1d.FailurePct, 64); err == nil {
+								metricValue = v
+								metricLabel = "failure_rate"
+								found = true
+							}
+						}
+					case "volume":
+						metricValue = float64(data.Rates1d.Total)
+						metricLabel = "volume"
+						found = true
+					case "latency_p100":
+						if len(data.Windows) > 2 {
+							metricValue = float64(data.Windows[2].P100LatencyMs) // 24h window
+							metricLabel = "latency_p100"
+							found = true
+						}
+
+					case "ses_bounce_rate", "ses_complaint_rate", "ses_error_rate":
+						// Evaluate against sesCache for the specified region
+						region := rule.SESRegion
+						if region == "" {
+							region = getEnv("AWS_REGION", "us-east-1")
+						}
+						cacheVal, ok := sesCache.Load(region)
+						if !ok {
+							continue
+						}
+						sentry := cacheVal.(*sesCacheEntry)
+						sentry.mu.RLock()
+						sdata := sentry.Data
+						sentry.mu.RUnlock()
+						if sdata == nil || sdata.Sends == 0 {
+							continue
+						}
+						switch rule.MetricType {
+						case "ses_bounce_rate":
+							if v, err := strconv.ParseFloat(strings.ReplaceAll(sdata.BounceRate, "%", ""), 64); err == nil {
+								metricValue = v
+								metricLabel = "ses_bounce_rate"
+								found = true
+							}
+						case "ses_complaint_rate":
+							if v, err := strconv.ParseFloat(strings.ReplaceAll(sdata.ComplaintRate, "%", ""), 64); err == nil {
+								metricValue = v
+								metricLabel = "ses_complaint_rate"
+								found = true
+							}
+						case "ses_error_rate":
+							if v, err := strconv.ParseFloat(strings.ReplaceAll(sdata.ErrorRate, "%", ""), 64); err == nil {
+								metricValue = v
+								metricLabel = "ses_error_rate"
+								found = true
+							}
+						}
+
+					case "ses_send_volume":
+						region := rule.SESRegion
+						if region == "" {
+							region = getEnv("AWS_REGION", "us-east-1")
+						}
+						cacheVal, ok := sesCache.Load(region)
+						if !ok {
+							continue
+						}
+						sentry := cacheVal.(*sesCacheEntry)
+						sentry.mu.RLock()
+						sdata := sentry.Data
+						sentry.mu.RUnlock()
+						if sdata == nil {
+							continue
+						}
+						metricValue = float64(sdata.Sends)
+						metricLabel = "ses_send_volume"
+						found = true
+
+					case "ses_bounce_count":
+						region := rule.SESRegion
+						if region == "" {
+							region = getEnv("AWS_REGION", "us-east-1")
+						}
+						cacheVal, ok := sesCache.Load(region)
+						if !ok {
+							continue
+						}
+						sentry := cacheVal.(*sesCacheEntry)
+						sentry.mu.RLock()
+						sdata := sentry.Data
+						sentry.mu.RUnlock()
+						if sdata == nil {
+							continue
+						}
+						metricValue = float64(sdata.Bounces)
+						metricLabel = "ses_bounce_count"
+						found = true
+
+					case "ses_complaint_count":
+						region := rule.SESRegion
+						if region == "" {
+							region = getEnv("AWS_REGION", "us-east-1")
+						}
+						cacheVal, ok := sesCache.Load(region)
+						if !ok {
+							continue
+						}
+						sentry := cacheVal.(*sesCacheEntry)
+						sentry.mu.RLock()
+						sdata := sentry.Data
+						sentry.mu.RUnlock()
+						if sdata == nil {
+							continue
+						}
+						metricValue = float64(sdata.Complaints)
+						metricLabel = "ses_complaint_count"
+						found = true
+					}
+
+					if !found {
+						continue
+					}
+
+					// Check condition
+					triggered := false
+					switch rule.ConditionType {
+					case "greater_than":
+						triggered = metricValue > rule.Threshold
+					case "less_than":
+						triggered = metricValue < rule.Threshold
+					}
+
+					if !triggered {
+						continue
+					}
+
+					// Check if this was already triggered recently (avoid re-triggering)
+					if rule.LastTriggeredAt != nil && time.Since(*rule.LastTriggeredAt) < 5*time.Minute {
+						continue
+					}
+
+					// Send notification via NotifyHub
+					if t.NotifyHubURL == "" || t.NotifyHubAPIKey == "" {
+						log.Printf("WARN: tenant %d has no NotifyHub config, cannot send alert", t.ID)
+						continue
+					}
+
+					// Use custom message template if available
+					bodyMsg := fmt.Sprintf("Alert %q triggered: %s is %.2f (threshold: %s %.2f)", rule.Name, metricLabel, metricValue, rule.ConditionType, rule.Threshold)
+					if rule.MessageTemplate != "" {
+						bodyMsg = rule.MessageTemplate
+						bodyMsg = strings.ReplaceAll(bodyMsg, "{{rule_name}}", rule.Name)
+						bodyMsg = strings.ReplaceAll(bodyMsg, "{{metric_type}}", rule.MetricType)
+						bodyMsg = strings.ReplaceAll(bodyMsg, "{{metric_label}}", metricLabel)
+						bodyMsg = strings.ReplaceAll(bodyMsg, "{{metric_value}}", fmt.Sprintf("%.2f", metricValue))
+						bodyMsg = strings.ReplaceAll(bodyMsg, "{{condition_type}}", rule.ConditionType)
+						bodyMsg = strings.ReplaceAll(bodyMsg, "{{threshold}}", fmt.Sprintf("%.2f", rule.Threshold))
+						bodyMsg = strings.ReplaceAll(bodyMsg, "{{tenant_id}}", fmt.Sprintf("%d", t.ID))
+						bodyMsg = strings.ReplaceAll(bodyMsg, "{{alert_name}}", rule.Name)
+					}
+
+					notifyPayload := map[string]interface{}{
+						"idempotency_key": newUUIDv4(),
+						"type":            "alert",
+						"channels":        []string{rule.NotificationChannel},
+						"subject":         fmt.Sprintf("[ALERT] %s - %s %.2f", rule.Name, rule.ConditionType, rule.Threshold),
+						"body":            bodyMsg,
+						"recipient":       rule.NotificationTarget,
+					}
+					if rule.NotifyHubTemplateID != "" {
+						notifyPayload["template_id"] = rule.NotifyHubTemplateID
+					}
+					if rule.NotificationChannel == "slack" && rule.NotificationTarget != "" {
+						notifyPayload["slack_channel"] = rule.NotificationTarget
+					}
+					notifyPayload["template_variables"] = map[string]string{
+						"rule_name":      rule.Name,
+						"rule_id":        fmt.Sprintf("%d", rule.ID),
+						"tile_id":        rule.TileID,
+						"metric_type":    rule.MetricType,
+						"metric_value":   fmt.Sprintf("%.2f", metricValue),
+						"condition_type": rule.ConditionType,
+						"threshold":      fmt.Sprintf("%.2f", rule.Threshold),
+					}
+
+					payloadBytes, err := json.Marshal(notifyPayload)
+					if err != nil {
+						log.Printf("ERROR: alert eval: marshal payload: %v", err)
+						continue
+					}
+
+					// Use only the scheme+host from NotifyHubURL (strip any existing path)
+					// to avoid duplicate path segments when appending /v1/...
+					parsedBase, err := url.Parse(t.NotifyHubURL)
+					if err != nil {
+						log.Printf("ERROR: alert eval: parse notifyhub URL %q: %v", t.NotifyHubURL, err)
+						continue
+					}
+					stripped := &url.URL{Scheme: parsedBase.Scheme, Host: parsedBase.Host}
+					notifyURL := stripped.JoinPath("/v1/notifications").String()
+					httpReq, err := http.NewRequest(http.MethodPost, notifyURL, bytes.NewReader(payloadBytes))
+					if err != nil {
+						log.Printf("ERROR: alert eval: create request: %v", err)
+						continue
+					}
+					httpReq.Header.Set("Content-Type", "application/json")
+					httpReq.Header.Set("X-API-Key", t.NotifyHubAPIKey)
+
+					client := &http.Client{Timeout: 15 * time.Second}
+					resp, err := client.Do(httpReq)
+					status := "sent"
+					errMsg := ""
+					if err != nil {
+						status = "failed"
+						errMsg = err.Error()
+					} else {
+						if resp.StatusCode >= 400 {
+							status = "failed"
+							respBody, _ := io.ReadAll(resp.Body)
+							errMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+						}
+						resp.Body.Close()
+					}
+
+					// Record alert history
+					now := time.Now()
+					db.Exec(`
+                        INSERT INTO alert_history (tenant_id, alert_rule_id, tile_id, metric_type,
+                            metric_value, threshold, condition_type, channel, recipient, status, error_message, sent_at)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+						t.ID, rule.ID, rule.TileID, rule.MetricType, metricValue, rule.Threshold,
+						rule.ConditionType, rule.NotificationChannel, rule.NotificationTarget,
+						status, errMsg, now)
+
+					// Update last_triggered_at
+					db.Exec(`UPDATE alert_rules SET last_triggered_at = $1 WHERE id = $2`, now, rule.ID)
+
+					// ─── Codefac Pipeline Evaluation ────────────────
+					if rule.NotificationChannel == "webhook" {
+						pipelineRows, err := db.Query(`
+							SELECT id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
+								payload_template, enabled, last_triggered_at
+							FROM codefac_pipelines WHERE tenant_id = $1 AND enabled = true
+							AND metric_type = $2 AND condition_type = $3`, t.ID, rule.MetricType, rule.ConditionType)
+						if err == nil {
+							for pipelineRows.Next() {
+								var pipe CodefacPipeline
+								if err := pipelineRows.Scan(&pipe.ID, &pipe.TenantID, &pipe.Name, &pipe.PipelineName,
+									&pipe.MetricType, &pipe.ConditionType, &pipe.Threshold,
+									&pipe.PayloadTemplate, &pipe.Enabled, &pipe.LastTriggeredAt); err != nil {
+									continue
+								}
+								// Check threshold matches
+								var conditionMet bool
+								switch pipe.ConditionType {
+								case "greater_than":
+									conditionMet = metricValue > pipe.Threshold
+								case "less_than":
+									conditionMet = metricValue < pipe.Threshold
+								}
+								if !conditionMet {
+									continue
+								}
+								// Avoid re-triggering
+								if pipe.LastTriggeredAt != nil && time.Since(*pipe.LastTriggeredAt) < 5*time.Minute {
+									continue
+								}
+
+								// Build payload from template with variable substitution
+								payloadStr := pipe.PayloadTemplate
+								payloadStr = strings.ReplaceAll(payloadStr, "{{rule_name}}", rule.Name)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{metric_type}}", rule.MetricType)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{metric_value}}", fmt.Sprintf("%.2f", metricValue))
+								payloadStr = strings.ReplaceAll(payloadStr, "{{metric_label}}", metricLabel)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{condition_type}}", rule.ConditionType)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{threshold}}", fmt.Sprintf("%.2f", pipe.Threshold))
+								payloadStr = strings.ReplaceAll(payloadStr, "{{tenant_id}}", fmt.Sprintf("%d", t.ID))
+								payloadStr = strings.ReplaceAll(payloadStr, "{{pipeline_name}}", pipe.Name)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{alert_name}}", rule.Name)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{idempotency_key}}", newUUIDv4())
+
+								// Send via NotifyHub (which handles headers/delivery)
+								notifyPayload := map[string]interface{}{
+									"idempotency_key": newUUIDv4(),
+									"type":            "alert",
+									"channels":        []string{"webhook"},
+									"forced_vendor":   "codefac",
+									"subject":         fmt.Sprintf("[PIPELINE] %s", pipe.Name),
+									"body":            payloadStr,
+									"recipient":       pipe.PipelineName,
+								}
+								notifyPayload["template_variables"] = map[string]string{
+									"pipeline_name":  pipe.Name,
+									"rule_name":      rule.Name,
+									"metric_type":    rule.MetricType,
+									"metric_value":   fmt.Sprintf("%.2f", metricValue),
+									"condition_type": rule.ConditionType,
+									"threshold":      fmt.Sprintf("%.2f", pipe.Threshold),
+								}
+
+								payloadBytes, _ := json.Marshal(notifyPayload)
+								parsedBase, _ := url.Parse(t.NotifyHubURL)
+								stripped := &url.URL{Scheme: parsedBase.Scheme, Host: parsedBase.Host}
+								notifyURL := stripped.JoinPath("/v1/notifications").String()
+								httpReq, _ := http.NewRequest(http.MethodPost, notifyURL, bytes.NewReader(payloadBytes))
+								httpReq.Header.Set("Content-Type", "application/json")
+								httpReq.Header.Set("X-API-Key", t.NotifyHubAPIKey)
+
+								client := &http.Client{Timeout: 15 * time.Second}
+								resp, err := client.Do(httpReq)
+								pipeStatus := "sent"
+								pipeErrMsg := ""
+								if err != nil {
+									pipeStatus = "failed"
+									pipeErrMsg = err.Error()
+								} else {
+									if resp.StatusCode >= 400 {
+										pipeStatus = "failed"
+										respBody, _ := io.ReadAll(resp.Body)
+										pipeErrMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+									}
+									resp.Body.Close()
+								}
+
+								// Record in alert_history
+								now := time.Now()
+								db.Exec(`
+									INSERT INTO alert_history (tenant_id, alert_rule_id, tile_id, metric_type,
+										metric_value, threshold, condition_type, channel, recipient, status, error_message, sent_at, workflow_id, run_id)
+									VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+									t.ID, &pipe.ID, rule.TileID, rule.MetricType, metricValue, pipe.Threshold,
+									pipe.ConditionType, "pipeline", pipe.PipelineName, pipeStatus, pipeErrMsg, now, "", "")
+
+								// Update last_triggered_at
+								db.Exec(`UPDATE codefac_pipelines SET last_triggered_at = $1 WHERE id = $2`, now, pipe.ID)
+
+								log.Printf("CODEFAC PIPELINE: tenant %d pipeline %q triggered (%.2f %s %.2f) -> %s",
+									t.ID, pipe.Name, metricValue, pipe.ConditionType, pipe.Threshold, pipeStatus)
+							}
+							pipelineRows.Close()
+						}
+					}
+
+					log.Printf("ALERT: tenant %d rule %q triggered (%.2f %s %.2f) -> %s", t.ID, rule.Name, metricValue, rule.ConditionType, rule.Threshold, status)
+				}
+
+				// ─── Workflow Failure Evaluation ─────────────────
+				// Check recent failed/timed out workflows and trigger matching pipelines
+				if len(data.RecentFailed) > 0 {
+					pipeRows, err := db.Query(`
+						SELECT id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
+							payload_template, enabled, last_triggered_at
+						FROM codefac_pipelines WHERE tenant_id = $1 AND enabled = true
+						AND metric_type = 'workflow_failure'`, t.ID)
+					if err == nil {
+						for pipeRows.Next() {
+							var pipe CodefacPipeline
+							if err := pipeRows.Scan(&pipe.ID, &pipe.TenantID, &pipe.Name, &pipe.PipelineName,
+								&pipe.MetricType, &pipe.ConditionType, &pipe.Threshold,
+								&pipe.PayloadTemplate, &pipe.Enabled, &pipe.LastTriggeredAt); err != nil {
+								continue
+							}
+							// Avoid re-triggering
+							if pipe.LastTriggeredAt != nil && time.Since(*pipe.LastTriggeredAt) < 5*time.Minute {
+								continue
+							}
+
+							// Send each failure as a separate webhook via NotifyHub
+							for _, wf := range data.RecentFailed {
+								payloadStr := pipe.PayloadTemplate
+								payloadStr = strings.ReplaceAll(payloadStr, "{{pipeline_name}}", pipe.Name)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{domain}}", t.DomainName)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{domain_id}}", t.DomainID)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{tenant_id}}", fmt.Sprintf("%d", t.ID))
+								payloadStr = strings.ReplaceAll(payloadStr, "{{workflow_id}}", wf.WorkflowID)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{run_id}}", wf.RunID)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{workflow_type}}", wf.WorkflowType)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{tasklist}}", wf.TaskList)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{status}}", wf.Status)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{close_time}}", wf.CloseTime)
+								payloadStr = strings.ReplaceAll(payloadStr, "{{idempotency_key}}", newUUIDv4())
+
+								notifyPayload := map[string]interface{}{
+									"idempotency_key": newUUIDv4(),
+									"type":            "alert",
+									"channels":        []string{"webhook"},
+									"forced_vendor":   "codefac",
+									"subject":         fmt.Sprintf("[WORKFLOW FAILURE] %s - %s", pipe.Name, wf.WorkflowType),
+									"body":            payloadStr,
+									"recipient":       pipe.PipelineName,
+								}
+								notifyPayload["template_variables"] = map[string]string{
+									"pipeline_name": pipe.Name,
+									"workflow_id":   wf.WorkflowID,
+									"run_id":        wf.RunID,
+									"workflow_type": wf.WorkflowType,
+									"status":        wf.Status,
+									"domain":        t.DomainName,
+								}
+
+								payloadBytes, _ := json.Marshal(notifyPayload)
+								parsedBase, _ := url.Parse(t.NotifyHubURL)
+								stripped := &url.URL{Scheme: parsedBase.Scheme, Host: parsedBase.Host}
+								notifyURL := stripped.JoinPath("/v1/notifications").String()
+								httpReq, _ := http.NewRequest(http.MethodPost, notifyURL, bytes.NewReader(payloadBytes))
+								httpReq.Header.Set("Content-Type", "application/json")
+								httpReq.Header.Set("X-API-Key", t.NotifyHubAPIKey)
+
+								client := &http.Client{Timeout: 15 * time.Second}
+								resp, err := client.Do(httpReq)
+								wfStatus := "sent"
+								wfErrMsg := ""
+								if err != nil {
+									wfStatus = "failed"
+									wfErrMsg = err.Error()
+								} else {
+									if resp.StatusCode >= 400 {
+										wfStatus = "failed"
+										respBody, _ := io.ReadAll(resp.Body)
+										wfErrMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+									}
+									resp.Body.Close()
+								}
+
+								now := time.Now()
+								db.Exec(`
+									INSERT INTO alert_history (tenant_id, tile_id, metric_type,
+										metric_value, threshold, condition_type, channel, recipient, status, error_message, sent_at, workflow_id, run_id)
+									VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+									t.ID, "recent-failures", "workflow_failure", 0, pipe.Threshold,
+									pipe.ConditionType, "pipeline", pipe.PipelineName, wfStatus, wfErrMsg, now, wf.WorkflowID, wf.RunID)
+
+								log.Printf("WORKFLOW FAILURE PIPELINE: tenant %d pipeline %q workflow %s/%s -> %s",
+									t.ID, pipe.Name, wf.WorkflowID, wf.RunID, wfStatus)
+							}
+							// Update last_triggered_at after processing all failures
+							db.Exec(`UPDATE codefac_pipelines SET last_triggered_at = $1 WHERE id = $2`, time.Now(), pipe.ID)
+						}
+						pipeRows.Close()
+					}
+				}
+
+			}
+		}
+	}
+}
+
+// notifyhubWebhooksHandler handles GET /api/alerts/notifyhub-webhooks.
+// It proxies to the tenant's NotifyHub instance to fetch vendor configs
+// and returns only webhook-related configurations.
+func notifyhubWebhooksHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	tenantIDStr := r.URL.Query().Get("tenant_id")
+	if tenantIDStr == "" {
+		writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+		return
+	}
+	var tenantID int
+	if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+		writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+		return
+	}
+
+	// Load the tenant to get NotifyHub config
+	tenant, err := tenantStore.GetByID(tenantID)
+	if err != nil {
+		writeJSONError(w, fmt.Sprintf("get tenant: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if tenant == nil {
+		writeJSONError(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+	if tenant.NotifyHubURL == "" {
+		writeJSONError(w, "notifyhub_url not configured for this tenant", http.StatusBadRequest)
+		return
+	}
+
+	// Call NotifyHub's vendor config endpoint
+	// Use only the scheme+host from NotifyHubURL (strip any existing path)
+	parsedBase, err := url.Parse(tenant.NotifyHubURL)
+	if err != nil {
+		writeJSONError(w, fmt.Sprintf("invalid notifyhub_url: %v", err), http.StatusInternalServerError)
+		return
+	}
+	stripped := &url.URL{Scheme: parsedBase.Scheme, Host: parsedBase.Host}
+	vendorURL := stripped.JoinPath("/v1/admin/config/vendors").String()
+	req, err := http.NewRequest(http.MethodGet, vendorURL, nil)
+	if err != nil {
+		writeJSONError(w, fmt.Sprintf("create request: %v", err), http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("X-API-Key", tenant.NotifyHubAPIKey)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		writeJSONError(w, fmt.Sprintf("notifyhub request failed: %v", err), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		writeJSONError(w, fmt.Sprintf("notifyhub returned status %d", resp.StatusCode), http.StatusBadGateway)
+		return
+	}
+
+	// Parse the response
+	var vendorConfigs []map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&vendorConfigs); err != nil {
+		writeJSONError(w, fmt.Sprintf("parse response: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Filter for webhook-related configs
+	webhookConfigs := make([]map[string]interface{}, 0)
+	for _, cfg := range vendorConfigs {
+		vt, ok := cfg["vendor_type"].(string)
+		if !ok {
+			continue
+		}
+		// Include any vendor type that contains "webhook"
+		if strings.Contains(strings.ToLower(vt), "webhook") {
+			webhookConfigs = append(webhookConfigs, cfg)
+		}
+	}
+
+	writeJSON(w, webhookConfigs, http.StatusOK)
+}
 
 func main() {
 	// Database connection
@@ -2220,6 +5529,86 @@ func main() {
 		log.Printf("WARN: could not add es_api_key column: %v", err)
 	}
 
+	// Migration: add audience_url column for GCP identity token auth
+	if _, err := db.Exec(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS audience_url TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add audience_url column: %v", err)
+	}
+
+	// Migration: add notifyhub columns
+	if _, err := db.Exec(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS notifyhub_url TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add notifyhub_url column: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS notifyhub_api_key TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add notifyhub_api_key column: %v", err)
+	}
+
+	// Ensure alert_rules table exists
+	if err := EnsureAlertsTable(db); err != nil {
+		log.Fatalf("Failed to ensure alert_rules table: %v", err)
+	}
+	log.Printf("Alert rules table ready")
+
+	// Migration: add tile_id column to alert_rules for per-tile alert association
+	if _, err := db.Exec(`ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS tile_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add tile_id column: %v", err)
+	}
+
+	// Migration: add alert_type column to alert_rules
+	if _, err := db.Exec(`ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS alert_type TEXT NOT NULL DEFAULT 'threshold'`); err != nil {
+		log.Printf("WARN: could not add alert_type column: %v", err)
+	}
+
+	// Migration: add ses_region column to alert_rules for per-region SES alerts
+	if _, err := db.Exec(`ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS ses_region TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add ses_region column: %v", err)
+	}
+
+	// Ensure notification_channels table exists
+	if err := EnsureNotificationChannelsTable(db); err != nil {
+		log.Fatalf("Failed to ensure notification_channels table: %v", err)
+	}
+	log.Printf("Notification channels table ready")
+
+	// Migration: add scope column to notification_channels
+	if _, err := db.Exec(`ALTER TABLE notification_channels ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'alert'`); err != nil {
+		log.Printf("WARN: could not add scope column: %v", err)
+	}
+	// Drop old unique constraint and add new one with scope
+	db.Exec(`ALTER TABLE notification_channels DROP CONSTRAINT IF EXISTS notification_channels_tenant_id_channel_key`)
+	db.Exec(`ALTER TABLE notification_channels ADD CONSTRAINT notification_channels_tenant_id_channel_scope_key UNIQUE (tenant_id, channel, scope)`)
+
+	// Ensure reports table exists
+	if err := EnsureReportsTable(db); err != nil {
+		log.Fatalf("Failed to ensure reports table: %v", err)
+	}
+	log.Printf("Reports table ready")
+
+	// Migration: add send_time and timezone columns to reports
+	if _, err := db.Exec(`ALTER TABLE reports ADD COLUMN IF NOT EXISTS send_time TEXT NOT NULL DEFAULT '08:00'`); err != nil {
+		log.Printf("WARN: could not add send_time column: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE reports ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'UTC'`); err != nil {
+		log.Printf("WARN: could not add timezone column: %v", err)
+	}
+
+	// Ensure alert_history table exists
+	if err := EnsureAlertHistoryTable(db); err != nil {
+		log.Fatalf("Failed to ensure alert_history table: %v", err)
+	}
+	log.Printf("Alert history table ready")
+
+	// Ensure codefac_pipelines table exists
+	if err := EnsureCodefacPipelinesTable(db); err != nil {
+		log.Fatalf("Failed to ensure codefac_pipelines table: %v", err)
+	}
+	log.Printf("Codefac pipelines table ready")
+
+	// Ensure rbac table exists
+	if err := EnsureRBACTable(db); err != nil {
+		log.Fatalf("Failed to ensure rbac table: %v", err)
+	}
+	log.Printf("RBAC table ready")
+
 	// Initialize tenant store
 	tenantStore = &TenantStore{DB: db}
 
@@ -2241,7 +5630,13 @@ func main() {
 	}
 
 	// Port
-	port := getEnv("PORT", "8080")
+	port := getEnv("PORT", "8081")
+
+	// Read ADMIN_KEY for one-time admin setup
+	adminKey := getEnv("ADMIN_KEY", "")
+	if adminKey != "" {
+		log.Printf("ADMIN_KEY is set — one-time admin setup is available via POST /api/rbac/setup-admin")
+	}
 
 	log.Printf("Starting Cadence Workflow Rate Dashboard backend (multi-tenant)")
 	log.Printf("  Port: %s", port)
@@ -2267,12 +5662,52 @@ func main() {
 	http.HandleFunc("/api/ses-metrics", corsMiddleware(requireAuth(sesMetricsHandler)))
 	http.HandleFunc("/api/ses-regions", corsMiddleware(requireAuth(sesRegionsHandler)))
 	http.HandleFunc("/api/ses-debug", corsMiddleware(requireAuth(sesDebugHandler)))
+
+	http.HandleFunc("/api/rbac/setup-admin", corsMiddleware(rbacSetupAdminHandler))
+	http.HandleFunc("/api/rbac/users", corsMiddleware(requirePermission("peoples")(rbacUsersHandler)))
+	http.HandleFunc("/api/rbac/user-tenants", corsMiddleware(requireAuth(rbacUserTenantsHandler)))
+	http.HandleFunc("/api/alerts/config", corsMiddleware(requirePermission("notifications")(alertsConfigHandler)))
+	http.HandleFunc("/api/alerts/rules", corsMiddleware(requirePermission("notifications")(alertsRulesHandler)))
+	http.HandleFunc("/api/alerts/rules/test", corsMiddleware(requirePermission("notifications")(alertsRulesTestHandler)))
+	http.HandleFunc("/api/codefac-pipelines", corsMiddleware(requirePermission("notifications")(codefacPipelinesHandler)))
+	http.HandleFunc("/api/codefac-pipelines/trigger", corsMiddleware(requirePermission("notifications")(codefacPipelineTriggerHandler)))
+	http.HandleFunc("/api/notification-channels", corsMiddleware(requirePermission("notifications")(notificationChannelsHandler)))
+	http.HandleFunc("/api/reports", corsMiddleware(requirePermission("report-history")(reportsHandler)))
+	http.HandleFunc("/api/reports/trigger", corsMiddleware(requirePermission("report-history")(reportTriggerHandler)))
+	http.HandleFunc("/api/alerts/history", corsMiddleware(requirePermission("report-history")(alertHistoryHandler)))
+	http.HandleFunc("/api/alerts/notifyhub-webhooks", corsMiddleware(requirePermission("notifications")(notifyhubWebhooksHandler)))
+	http.HandleFunc("/api/rbac", corsMiddleware(requireAuth(rbacHandler)))
+	http.HandleFunc("/api/rbac/my-access", corsMiddleware(requireAuth(rbacMyAccessHandler)))
 	http.HandleFunc("/health", corsMiddleware(healthHandler))
 
-	// Serve frontend static files (built by Vite)
+	// Start background data refreshers
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go startDashboardRefresher(ctx)
+	go startSESRefresher(ctx)
+	go startAlertEvaluator(ctx)
+
+	// Serve frontend static files (built by Vite) with SPA fallback
 	frontendDir := getEnv("FRONTEND_DIR", "./frontend")
 	log.Printf("Serving frontend from: %s", frontendDir)
-	http.Handle("/", http.FileServer(http.Dir(frontendDir)))
+	fs := http.FileServer(http.Dir(frontendDir))
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// If the request path has an extension (e.g. .js, .css, .png), serve the file directly
+		// Otherwise, serve index.html for SPA client-side routing
+		if ext := r.URL.Path; ext != "" {
+			for i := len(ext) - 1; i >= 0; i-- {
+				if ext[i] == '.' {
+					fs.ServeHTTP(w, r)
+					return
+				}
+				if ext[i] == '/' {
+					break
+				}
+			}
+		}
+		// Fallback to index.html for SPA routes
+		http.ServeFile(w, r, frontendDir+"/index.html")
+	})
 
 	// Start server
 	addr := ":" + port

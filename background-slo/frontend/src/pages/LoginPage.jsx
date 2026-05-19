@@ -4,7 +4,7 @@ import "./LoginPage.css";
 
 export default function LoginPage() {
   const { signIn } = useAuth();
-  const [error, setError]     = useState(null);
+  const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const btnRef = useRef(null);
 
@@ -38,7 +38,10 @@ export default function LoginPage() {
       init();
     } else {
       const interval = setInterval(() => {
-        if (window.google?.accounts?.id) { clearInterval(interval); init(); }
+        if (window.google?.accounts?.id) {
+          clearInterval(interval);
+          init();
+        }
       }, 80);
       return () => clearInterval(interval);
     }
@@ -48,7 +51,7 @@ export default function LoginPage() {
     setLoading(true);
     setError(null);
     try {
-      const res  = await fetch("/api/auth/verify", {
+      const res = await fetch("/api/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ credential: response.credential }),
@@ -58,7 +61,11 @@ export default function LoginPage() {
         setError(data.error ?? "Sign-in failed");
         return;
       }
-      signIn(data.token, { email: data.email, name: data.name, picture: data.picture });
+      signIn(data.token, {
+        email: data.email,
+        name: data.name,
+        picture: data.picture,
+      });
     } catch {
       setError("Network error — please try again.");
     } finally {
@@ -66,6 +73,7 @@ export default function LoginPage() {
     }
   };
 
+  const appointyOnly = import.meta.env.VITE_APPONTY_ONLY_LOGIN !== "false";
   const isDomainError = error?.includes("appointy.com");
 
   return (
@@ -100,10 +108,30 @@ export default function LoginPage() {
           <div className="login-error">
             {isDomainError ? (
               <>
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                  <circle cx="7" cy="7" r="6.25" stroke="currentColor" strokeWidth="1.25"/>
-                  <line x1="7" y1="4.5" x2="7" y2="7.5" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round"/>
-                  <circle cx="7" cy="9.5" r="0.7" fill="currentColor"/>
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 14 14"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <circle
+                    cx="7"
+                    cy="7"
+                    r="6.25"
+                    stroke="currentColor"
+                    strokeWidth="1.25"
+                  />
+                  <line
+                    x1="7"
+                    y1="4.5"
+                    x2="7"
+                    y2="7.5"
+                    stroke="currentColor"
+                    strokeWidth="1.25"
+                    strokeLinecap="round"
+                  />
+                  <circle cx="7" cy="9.5" r="0.7" fill="currentColor" />
                 </svg>
                 Only <strong>@appointy.com</strong> accounts are permitted.
               </>
@@ -113,7 +141,11 @@ export default function LoginPage() {
           </div>
         )}
 
-        <p className="login-note">Access is restricted to Appointy employees.</p>
+        {appointyOnly && (
+          <p className="login-note">
+            Access is restricted to Appointy employees.
+          </p>
+        )}
       </div>
     </div>
   );

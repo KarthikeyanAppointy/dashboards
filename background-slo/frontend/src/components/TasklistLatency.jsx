@@ -8,6 +8,42 @@ const WINDOW_OPTIONS = [
   { label: "Last 1d", value: 86400 },
 ];
 
+const LatencyAlertBell = ({ active, onClick, title }) => (
+  <button
+    className={`tl-alert-btn${active ? " active" : ""}`}
+    onClick={(e) => {
+      e.stopPropagation();
+      onClick();
+    }}
+    title={title}
+    aria-label={title}
+  >
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 15 15"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M7.5 1.5C4.5 1.5 2.5 4 2.5 7V10L1 12H14L12.5 10V7C12.5 4 10.5 1.5 7.5 1.5Z"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9.5 12C9.5 13.5 8.5 14 7.5 14C6.5 14 5.5 13.5 5.5 12"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+      />
+      {active && (
+        <circle cx="11.5" cy="3.5" r="2" fill="var(--accent)" stroke="none" />
+      )}
+    </svg>
+  </button>
+);
+
 function formatLatency(ms) {
   if (ms >= 1000) {
     return `${(ms / 1000).toFixed(2)}s`;
@@ -18,7 +54,7 @@ function formatLatency(ms) {
 function getBarWidth(avgMs, maxMs) {
   if (maxMs <= 0) return 0;
   const pct = (avgMs / maxMs) * 100;
-  return Math.max(pct, 4); // minimum 4% so even small values are visible
+  return Math.max(pct, 4);
 }
 
 function getBarClass(avgMs, maxMs) {
@@ -29,7 +65,12 @@ function getBarClass(avgMs, maxMs) {
   return "bar-low";
 }
 
-function TasklistLatency({ tasklists, tasklistWindow }) {
+function TasklistLatency({
+  tasklists,
+  tasklistWindow,
+  activeAlerts,
+  onAlertSetup,
+}) {
   if (!tasklists || tasklists.length === 0) {
     return (
       <div className="tl-section">
@@ -45,7 +86,6 @@ function TasklistLatency({ tasklists, tasklistWindow }) {
     );
   }
 
-  // Sort by avg latency descending (already sorted from ES, but ensure it)
   const sorted = [...tasklists].sort(
     (a, b) => b.avg_latency_ms - a.avg_latency_ms,
   );
@@ -71,33 +111,51 @@ function TasklistLatency({ tasklists, tasklistWindow }) {
               <th>Tasklist</th>
               <th>Avg Latency</th>
               <th>Workflows</th>
+              <th className="th-alert">Alert</th>
             </tr>
           </thead>
           <tbody>
-            {sorted.map((tl, idx) => (
-              <tr key={idx}>
-                <td className="cell-tasklist">
-                  <code>{tl.tasklist}</code>
-                </td>
-                <td className="cell-latency">
-                  <span className="latency-value">
-                    {formatLatency(tl.avg_latency_ms)}
-                  </span>
-                  <span
-                    className={`latency-bar ${getBarClass(
-                      tl.avg_latency_ms,
-                      maxLatency,
-                    )}`}
-                    style={{
-                      width: `${getBarWidth(tl.avg_latency_ms, maxLatency)}%`,
-                    }}
-                  ></span>
-                </td>
-                <td className="cell-count">
-                  {tl.workflow_count.toLocaleString()}
-                </td>
-              </tr>
-            ))}
+            {sorted.map((tl, idx) => {
+              const encodedName = encodeURIComponent(tl.tasklist);
+              const tileId = `tasklist-latency:${encodedName}`;
+              const tileLabel = `Tasklist: ${tl.tasklist}`;
+              const isActive = activeAlerts && activeAlerts.has(tileId);
+              return (
+                <tr key={idx}>
+                  <td className="cell-tasklist">
+                    <code>{tl.tasklist}</code>
+                  </td>
+                  <td className="cell-latency">
+                    <span className="latency-value">
+                      {formatLatency(tl.avg_latency_ms)}
+                    </span>
+                    <span
+                      className={`latency-bar ${getBarClass(
+                        tl.avg_latency_ms,
+                        maxLatency,
+                      )}`}
+                      style={{
+                        width: `${getBarWidth(tl.avg_latency_ms, maxLatency)}%`,
+                      }}
+                    ></span>
+                  </td>
+                  <td className="cell-count">
+                    {tl.workflow_count.toLocaleString()}
+                  </td>
+                  <td className="cell-alert">
+                    <LatencyAlertBell
+                      active={isActive}
+                      onClick={() => onAlertSetup({ tileId, tileLabel })}
+                      title={
+                        isActive
+                          ? "Alert active — click to manage"
+                          : "Set up alert"
+                      }
+                    />
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

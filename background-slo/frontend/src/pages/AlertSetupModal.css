@@ -1,0 +1,215 @@
+/* ─── Alert Setup Modal ──────────────────────────────────────── */
+.alert-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.45);
+    padding: 20px;
+}
+
+.alert-modal-dialog {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 22px 24px;
+    max-width: 520px;
+    width: 100%;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+}
+
+.alert-modal-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0 0 18px;
+    color: var(--fg);
+    letter-spacing: -0.01em;
+}
+
+.alert-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+/* ─── Form rows ──────────────────────────────────────────────── */
+.alert-modal-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.alert-modal-row-inline {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.alert-modal-row-inline .alert-modal-row {
+    flex: 1;
+    min-width: 110px;
+}
+
+.alert-modal-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--fg-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.alert-modal-input,
+.alert-modal-select {
+    height: var(--control-height, 32px);
+    padding: 0 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+    transition:
+        border-color 0.15s ease,
+        box-shadow 0.15s ease;
+}
+
+.alert-modal-input:focus,
+.alert-modal-select:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.alert-modal-select {
+    cursor: pointer;
+    appearance: auto;
+    -webkit-appearance: auto;
+}
+
+/* ─── Forward info ──────────────────────────────────────────── */
+.alert-modal-forward-info {
+    background: var(--surface-secondary);
+    border: 1px solid var(--separator);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--fg-secondary);
+}
+
+.alert-modal-forward-info p {
+    margin: 0;
+}
+
+/* ─── Checkbox ───────────────────────────────────────────────── */
+.alert-modal-checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--fg);
+    user-select: none;
+}
+
+.alert-modal-checkbox {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+/* ─── Actions ────────────────────────────────────────────────── */
+.alert-modal-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: 6px;
+}
+
+.alert-modal-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: var(--control-height, 32px);
+    padding: 0 14px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+        background 0.15s ease,
+        color 0.15s ease,
+        border-color 0.15s ease;
+    white-space: nowrap;
+    font-family: inherit;
+}
+
+.alert-modal-btn:hover {
+    background: var(--surface-secondary);
+    color: var(--fg);
+}
+
+.alert-modal-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.alert-modal-btn-primary {
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-color: transparent;
+}
+
+.alert-modal-btn-primary:hover {
+    background: var(--accent-hover);
+    color: var(--accent-fg);
+}
+
+.alert-modal-btn-secondary {
+    background: var(--surface);
+    color: var(--fg-secondary);
+    border-color: var(--border);
+}
+
+.alert-modal-btn-secondary:hover {
+    background: var(--surface-secondary);
+    color: var(--fg);
+}
+
+/* ─── Feedback ───────────────────────────────────────────────── */
+.alert-modal-feedback {
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 10px;
+    border-radius: var(--radius-sm);
+}
+
+.alert-modal-feedback-success {
+    background: var(--success-bg);
+    color: var(--success-fg);
+    border: 1px solid rgba(40, 167, 69, 0.2);
+}
+
+.alert-modal-feedback-error {
+    background: var(--danger-bg);
+    color: var(--danger-fg);
+    border: 1px solid rgba(220, 53, 69, 0.2);
+}
+
+@media (max-width: 640px) {
+    .alert-modal-dialog {
+        max-width: 100%;
+        margin: 0 10px;
+    }
+
+    .alert-modal-row-inline {
+        flex-direction: column;
+        gap: 0;
+    }
+}

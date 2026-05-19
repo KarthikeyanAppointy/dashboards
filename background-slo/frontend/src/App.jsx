@@ -8,7 +8,25 @@ import RecentFailuresPage from "./pages/RecentFailuresPage";
 import ActivityErrorsPage from "./pages/ActivityErrorsPage";
 import P100LatencyPage from "./pages/P100LatencyPage";
 import SesDashboardPage from "./pages/SesDashboardPage";
+
+// Route-to-permission mapping (must match Sidebar.jsx)
+const ROUTE_PERM = {
+  "/": "overview",
+  "/recent-failures": "failures",
+  "/activity-errors": "activity-errors",
+  "/p100-latency": "p100-latency",
+  "/ses": "ses",
+  "/notifications": "notifications",
+  "/report-history": "report-history",
+  "/peoples": "peoples",
+  "/admin/clients": "admin",
+};
+import NotificationsPage from "./pages/NotificationsPage";
+import ReportHistoryPage from "./pages/ReportHistoryPage";
 import LoginPage from "./pages/LoginPage";
+import PeoplesPage from "./pages/PeoplesPage";
+import TenantsPage from "./pages/TenantsPage";
+import WelcomePage from "./pages/WelcomePage";
 
 import "./App.css";
 
@@ -45,18 +63,43 @@ const PAGE_META = {
     description:
       "Monitor AWS SES send volumes, bounce rates, complaint rates, and overall delivery health.",
   },
+  "/notifications": {
+    eyebrow: "Pages / Notifications",
+    title: "Notifications & Alerts",
+    description:
+      "Configure notification channels, alert rules, and scheduled reports.",
+  },
+  "/report-history": {
+    eyebrow: "Pages / Reports",
+    title: "Report & Pipeline History",
+    description:
+      "History of triggered scheduled reports and pipeline executions.",
+  },
+  "/peoples": {
+    eyebrow: "Pages / Admin",
+    title: "Peoples",
+    description: "Manage user roles and permissions across tenants.",
+  },
+  "/admin/clients": {
+    eyebrow: "Pages / Admin",
+    title: "Clients",
+    description: "Manage and configure client tenants.",
+  },
 };
 
 function App() {
-  const { user, checking, signOut, authFetch } = useAuth();
+  const { user, checking } = useAuth();
+
+  if (checking) return null;
+  if (!user) return <LoginPage />;
+
+  return <AppContent />;
+}
+
+function AppContent() {
+  const { user, signOut, authFetch } = useAuth();
   const location = useLocation();
   const pageMeta = PAGE_META[location.pathname] ?? PAGE_META["/"];
-
-  // Show a blank screen while validating a stored token
-  if (checking) return null;
-
-  // Not signed in → login page
-  if (!user) return <LoginPage />;
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -64,6 +107,7 @@ function App() {
   const [lastUpdated, setLastUpdated] = useState(null);
 
   const [tenants, setTenants] = useState([]);
+  const [userAssignedTenantIds, setUserAssignedTenantIds] = useState(null);
   const [selectedTenantId, setSelectedTenantId] = useState(() => {
     const saved = localStorage.getItem(LS_KEY);
     return saved ? Number(saved) : null;
@@ -116,6 +160,98 @@ function App() {
 
   const [offset, setOffset] = useState(0);
   const [totalFailed, setTotalFailed] = useState(0);
+  const [alertModal, setAlertModal] = useState(null);
+  const [activeAlerts, setActiveAlerts] = useState(new Set());
+  const [userPermissions, setUserPermissions] = useState([]);
+  const [accessChecked, setAccessChecked] = useState(false);
+  const [showWelcome, setShowWelcome] = useState(false);
+
+  // Snackbar state for Apple-style toast notifications
+  const [snackbar, setSnackbar] = useState({
+    message: "",
+    type: "success",
+    visible: false,
+  });
+  const showSnackbar = useCallback((message, type = "success") => {
+    setSnackbar({ message, type, visible: true });
+    setTimeout(() => {
+      setSnackbar((prev) => ({ ...prev, visible: false }));
+    }, 3000);
+  }, []);
+
+  // Whether the user can access a given route path
+  const canAccess = useCallback(
+    (path) => {
+      const required = ROUTE_PERM[path];
+      if (!required) return true;
+
+      return userPermissions.includes(required);
+    },
+    [userPermissions],
+  );
+
+  // Whether alert / pipeline-trigger buttons are visible
+  const notificationsEnabled =
+    userPermissions && userPermissions.includes("notifications");
+
+  const fetchAlertRules = useCallback(async () => {
+    if (!selectedTenantId) return;
+    try {
+      const res = await authFetch(
+        `/api/alerts/rules?tenant_id=${selectedTenantId}`,
+      );
+      if (res.ok) {
+        const json = await res.json();
+        const rules = Array.isArray(json) ? json : (json.rules ?? []);
+        const tileIds = new Set();
+        rules.forEach((r) => {
+          if (r.tile_id) tileIds.add(r.tile_id);
+        });
+        setActiveAlerts(tileIds);
+      }
+    } catch {
+      // ignore
+    }
+  }, [authFetch, selectedTenantId]);
+
+  const fetchPermissions = useCallback(async () => {
+    if (!selectedTenantId) return;
+    try {
+      const res = await authFetch(`/api/rbac?tenant_id=${selectedTenantId}`);
+      if (res.ok) {
+        const json = await res.json();
+        setUserPermissions(json.permissions || []);
+        setAccessChecked(true);
+      }
+    } catch {
+      setAccessChecked(true);
+    }
+  }, [authFetch, selectedTenantId]);
+
+  useEffect(() => {
+    fetchAlertRules();
+    fetchPermissions();
+  }, [fetchAlertRules, fetchPermissions]);
+
+  // Show welcome page when access is confirmed to be empty
+  useEffect(() => {
+    if (accessChecked) {
+      const noPermissions = selectedTenantId && userPermissions.length === 0;
+      const noAccess =
+        !selectedTenantId &&
+        Array.isArray(tenants) &&
+        tenants.length === 0 &&
+        userAssignedTenantIds !== null;
+      setShowWelcome(noPermissions || noAccess);
+    }
+  }, [
+    accessChecked,
+    selectedTenantId,
+    userPermissions,
+    tenants,
+    userAssignedTenantIds,
+  ]);
+
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem("slo_dashboard_theme");
     return saved || "light";
@@ -143,6 +279,23 @@ function App() {
     setTheme((prev) => (prev === "light" ? "dark" : "light"));
   };
 
+  const fetchUserAssignedTenants = useCallback(async () => {
+    if (!user?.email) return null;
+    try {
+      const res = await authFetch(
+        `/api/rbac/user-tenants?user_email=${encodeURIComponent(user.email)}`,
+      );
+      if (res.ok) {
+        const list = await res.json();
+        const ids = new Set(list.map((ut) => ut.tenant_id));
+        setUserAssignedTenantIds(ids);
+        return ids;
+      }
+    } catch {}
+    setUserAssignedTenantIds(null);
+    return null;
+  }, [authFetch, user?.email]);
+
   const fetchTenants = useCallback(async () => {
     try {
       const res = await authFetch("/api/tenants");
@@ -157,18 +310,26 @@ function App() {
   }, [authFetch]);
 
   useEffect(() => {
-    fetchTenants().then((list) => {
-      if (list.length > 0) {
+    fetchTenants().then(async (list) => {
+      const assignedSet = await fetchUserAssignedTenants();
+      // assignedSet is null while loading, or a Set (possibly empty) when loaded
+      const accessible =
+        assignedSet !== null ? list.filter((t) => assignedSet.has(t.id)) : list;
+      if (accessible.length > 0) {
         const saved = localStorage.getItem(LS_KEY);
         const savedId = saved ? Number(saved) : null;
-        const exists = list.some((tenant) => tenant.id === savedId);
-        if (!exists) {
-          setSelectedTenantId(list[0].id);
-          localStorage.setItem(LS_KEY, String(list[0].id));
+        const exists = accessible.some((t) => t.id === savedId);
+        if (!exists || (assignedSet !== null && !assignedSet.has(savedId))) {
+          setSelectedTenantId(accessible[0].id);
+          localStorage.setItem(LS_KEY, String(accessible[0].id));
         }
+      } else {
+        setSelectedTenantId(null);
+        localStorage.removeItem(LS_KEY);
+        setAccessChecked(true);
       }
     });
-  }, [fetchTenants]);
+  }, [fetchTenants, fetchUserAssignedTenants]);
 
   const buildQueryString = useCallback(() => {
     const params = new URLSearchParams();
@@ -274,6 +435,7 @@ function App() {
 
   const handleTasklistWindowChange = (newWindow) => {
     setTasklistWindow(newWindow);
+    setOffset(0);
     localStorage.setItem("slo_dashboard_tasklist_window", String(newWindow));
   };
 
@@ -352,7 +514,10 @@ function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar domainName={data?.domain_name} />
+      <Sidebar
+        domainName={data?.domain_name}
+        userPermissions={userPermissions}
+      />
 
       <div className="app-stage">
         <header className="app-topbar">
@@ -582,48 +747,56 @@ function App() {
             </div>
           </div>
 
-          <div className="topbar-row topbar-row-controls">
-            <div className="toolbar-group">
-              <span className="toolbar-label">Window</span>
-              <select
-                className="toolbar-select"
-                value={tasklistWindow}
-                onChange={(e) =>
-                  handleTasklistWindowChange(Number(e.target.value))
-                }
-              >
-                {WINDOW_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+          {/* Only show window/date controls on dashboard pages that need them */}
+          {(location.pathname === "/" ||
+            location.pathname === "/recent-failures" ||
+            location.pathname === "/activity-errors" ||
+            location.pathname === "/p100-latency") && (
+            <div className="topbar-row topbar-row-controls">
+              <div className="toolbar-group">
+                <span className="toolbar-label">Window</span>
+                <select
+                  className="toolbar-select"
+                  value={tasklistWindow}
+                  onChange={(e) =>
+                    handleTasklistWindowChange(Number(e.target.value))
+                  }
+                >
+                  {WINDOW_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-            <div className="topbar-separator" />
+              <div className="topbar-separator" />
 
-            <div className="toolbar-group">
-              <span className="toolbar-label">From</span>
-              <input
-                type="datetime-local"
-                className="toolbar-datetime"
-                value={tsToDt(startTime)}
-                onChange={(e) => handleStartTimeChange(dtToTs(e.target.value))}
-              />
-              <span className="toolbar-label">To</span>
-              <input
-                type="datetime-local"
-                className="toolbar-datetime"
-                value={tsToDt(endTime)}
-                onChange={(e) => handleEndTimeChange(dtToTs(e.target.value))}
-              />
-              {(startTime || endTime) && (
-                <button className="toolbar-clear-btn" onClick={clearDates}>
-                  Clear
-                </button>
-              )}
+              <div className="toolbar-group">
+                <span className="toolbar-label">From</span>
+                <input
+                  type="datetime-local"
+                  className="toolbar-datetime"
+                  value={tsToDt(startTime)}
+                  onChange={(e) =>
+                    handleStartTimeChange(dtToTs(e.target.value))
+                  }
+                />
+                <span className="toolbar-label">To</span>
+                <input
+                  type="datetime-local"
+                  className="toolbar-datetime"
+                  value={tsToDt(endTime)}
+                  onChange={(e) => handleEndTimeChange(dtToTs(e.target.value))}
+                />
+                {(startTime || endTime) && (
+                  <button className="toolbar-clear-btn" onClick={clearDates}>
+                    Clear
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </header>
 
         {error && (
@@ -634,7 +807,7 @@ function App() {
         )}
 
         <main className="app-main">
-          {data && (
+          {data && !showWelcome && (
             <div className="app-content">
               <Routes>
                 <Route
@@ -643,75 +816,224 @@ function App() {
                     <DashboardPage
                       data={data}
                       tasklistWindow={tasklistWindow}
+                      selectedTenantId={selectedTenantId}
+                      activeAlerts={activeAlerts}
+                      onAlertSetup={({ tileId, tileLabel }) =>
+                        setAlertModal({ tileId, tileLabel })
+                      }
+                      alertModal={alertModal}
+                      onCloseAlertModal={() => {
+                        setAlertModal(null);
+                        fetchAlertRules();
+                      }}
+                      notificationsEnabled={notificationsEnabled}
                     />
                   }
                 />
                 <Route
                   path="/recent-failures"
                   element={
-                    <RecentFailuresPage
-                      data={data}
-                      limit={limit}
-                      onLimitChange={handleLimitChange}
-                      statusFilter={statusFilter}
-                      onStatusFilterChange={handleStatusFilterChange}
-                      tasklistFilter={tasklistFilter}
-                      onTasklistFilterChange={handleTasklistFilterChange}
-                      availableTasklists={availableTasklists}
-                      offset={offset}
-                      onOffsetChange={handleOffsetChange}
-                      totalFailed={totalFailed}
-                    />
+                    canAccess("/recent-failures") ? (
+                      <RecentFailuresPage
+                        data={data}
+                        limit={limit}
+                        onLimitChange={handleLimitChange}
+                        statusFilter={statusFilter}
+                        onStatusFilterChange={handleStatusFilterChange}
+                        tasklistFilter={tasklistFilter}
+                        onTasklistFilterChange={handleTasklistFilterChange}
+                        availableTasklists={availableTasklists}
+                        offset={offset}
+                        onOffsetChange={handleOffsetChange}
+                        totalFailed={totalFailed}
+                        activeAlerts={activeAlerts}
+                        onAlertSetup={({ tileId, tileLabel }) =>
+                          setAlertModal({ tileId, tileLabel })
+                        }
+                        selectedTenantId={selectedTenantId}
+                        notificationsEnabled={notificationsEnabled}
+                      />
+                    ) : (
+                      <Navigate to="/" replace />
+                    )
                   }
                 />
                 <Route
                   path="/activity-errors"
                   element={
-                    <ActivityErrorsPage
-                      data={data}
-                      activityStatusFilter={activityStatusFilter}
-                      onActivityStatusFilterChange={
-                        handleActivityStatusFilterChange
-                      }
-                      activityErrorDetailField={activityErrorDetailField}
-                      onActivityErrorDetailFieldChange={
-                        handleActivityErrorDetailFieldChange
-                      }
-                    />
+                    canAccess("/activity-errors") ? (
+                      <ActivityErrorsPage
+                        data={data}
+                        activityStatusFilter={activityStatusFilter}
+                        onActivityStatusFilterChange={
+                          handleActivityStatusFilterChange
+                        }
+                        activityErrorDetailField={activityErrorDetailField}
+                        onActivityErrorDetailFieldChange={
+                          handleActivityErrorDetailFieldChange
+                        }
+                      />
+                    ) : (
+                      <Navigate to="/" replace />
+                    )
                   }
                 />
                 <Route
                   path="/p100-latency"
-                  element={<P100LatencyPage data={data} />}
+                  element={
+                    canAccess("/p100-latency") ? (
+                      <P100LatencyPage data={data} />
+                    ) : (
+                      <Navigate to="/" replace />
+                    )
+                  }
                 />
-                <Route path="/ses" element={null} />
+                <Route
+                  path="/ses"
+                  element={
+                    canAccess("/ses") ? null : <Navigate to="/" replace />
+                  }
+                />
+                <Route
+                  path="/notifications"
+                  element={
+                    canAccess("/notifications") ? null : (
+                      <Navigate to="/" replace />
+                    )
+                  }
+                />
+                <Route
+                  path="/report-history"
+                  element={
+                    canAccess("/report-history") ? null : (
+                      <Navigate to="/" replace />
+                    )
+                  }
+                />
+                <Route
+                  path="/peoples"
+                  element={
+                    canAccess("/peoples") ? null : <Navigate to="/" replace />
+                  }
+                />
+                <Route
+                  path="/admin/clients"
+                  element={
+                    canAccess("/admin/clients") ? null : (
+                      <Navigate to="/" replace />
+                    )
+                  }
+                />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </div>
           )}
 
-          {location.pathname === "/ses" && (
-            <div className="app-content">
-              <SesDashboardPage />
-            </div>
-          )}
+          {location.pathname === "/ses" &&
+            canAccess("/ses") &&
+            !showWelcome && (
+              <div className="app-content">
+                <SesDashboardPage
+                  selectedTenantId={selectedTenantId}
+                  notificationsEnabled={notificationsEnabled}
+                />
+              </div>
+            )}
 
-          {!data &&
+          {location.pathname === "/notifications" &&
+            canAccess("/notifications") &&
+            !showWelcome && (
+              <div className="app-content">
+                <NotificationsPage
+                  selectedTenantId={selectedTenantId}
+                  showSnackbar={showSnackbar}
+                />
+              </div>
+            )}
+
+          {location.pathname === "/report-history" &&
+            canAccess("/report-history") &&
+            !showWelcome && (
+              <div className="app-content">
+                <ReportHistoryPage selectedTenantId={selectedTenantId} />
+              </div>
+            )}
+
+          {location.pathname === "/peoples" &&
+            canAccess("/peoples") &&
+            !showWelcome && (
+              <div className="app-content">
+                <PeoplesPage
+                  selectedTenantId={selectedTenantId}
+                  showSnackbar={showSnackbar}
+                />
+              </div>
+            )}
+
+          {location.pathname === "/admin/clients" &&
+            canAccess("/admin/clients") &&
+            !showWelcome && (
+              <div className="app-content">
+                <TenantsPage showSnackbar={showSnackbar} />
+              </div>
+            )}
+
+          {!showWelcome &&
+            !data &&
             !error &&
             selectedTenantId &&
-            location.pathname !== "/ses" && (
+            location.pathname !== "/ses" &&
+            location.pathname !== "/notifications" &&
+            location.pathname !== "/report-history" &&
+            location.pathname !== "/peoples" &&
+            location.pathname !== "/admin/clients" && (
               <div className="initial-loading card-surface">
                 <div className="spinner"></div>
                 <p>Loading dashboard data...</p>
               </div>
             )}
 
-          {!selectedTenantId && !error && location.pathname !== "/ses" && (
-            <div className="initial-loading card-surface">
-              <p>No tenants configured. Add tenants via the API.</p>
+          {showWelcome && (
+            <div className="app-content" style={{ padding: 0 }}>
+              <WelcomePage
+                onAccessGranted={() => {
+                  setShowWelcome(false);
+                  fetchPermissions();
+                }}
+              />
             </div>
           )}
+
+          {!showWelcome &&
+            !selectedTenantId &&
+            !error &&
+            location.pathname !== "/ses" &&
+            location.pathname !== "/notifications" &&
+            location.pathname !== "/report-history" &&
+            location.pathname !== "/peoples" &&
+            location.pathname !== "/admin/clients" && (
+              <div className="initial-loading card-surface">
+                <div className="spinner"></div>
+                <p>No clients assigned to your account.</p>
+                <p
+                  style={{
+                    fontSize: "12px",
+                    color: "var(--fg-tertiary)",
+                    marginTop: "4px",
+                  }}
+                >
+                  Contact an administrator to grant you access.
+                </p>
+              </div>
+            )}
         </main>
+      </div>
+
+      {/* ─── Snackbar Toast ──────────────────────────────────── */}
+      <div
+        className={`snackbar snackbar-${snackbar.type}${snackbar.visible ? " snackbar-visible" : ""}`}
+      >
+        {snackbar.message}
       </div>
     </div>
   );

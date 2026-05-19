@@ -1,0 +1,712 @@
+/* ─── Alerts Page Layout ──────────────────────────────────────── */
+.alerts-page {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 0;
+}
+
+.alerts-section {
+    padding: 0 0 18px;
+}
+
+/* ─── Section header is shared from App.css, but ensure spacing ─ */
+.alerts-section .section-header {
+    padding: 16px 18px 12px;
+}
+
+/* ─── Loading inline ──────────────────────────────────────────── */
+.alerts-loading-inline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 16px 18px;
+    color: var(--fg-secondary);
+    font-size: 13px;
+}
+
+.alerts-loading-inline .spinner {
+    width: 14px;
+    height: 14px;
+    border-width: 1.5px;
+}
+
+/* ─── Empty state ─────────────────────────────────────────────── */
+.alerts-empty {
+    padding: 32px 18px;
+    text-align: center;
+    color: var(--fg-tertiary);
+    font-size: 13px;
+}
+
+/* ─── Form Layout ─────────────────────────────────────────────── */
+.alerts-config-form {
+    padding: 0 18px;
+}
+
+.alerts-rule-form {
+    padding: 12px 18px 0;
+    margin: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-secondary);
+}
+
+.alerts-form-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 12px;
+}
+
+.alerts-form-row-grow {
+    flex: 1;
+    min-width: 0;
+}
+
+.alerts-form-inline {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.alerts-form-inline .alerts-form-row {
+    flex: 1;
+    min-width: 120px;
+}
+
+/* ─── Labels ──────────────────────────────────────────────────── */
+.alerts-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--fg-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+/* ─── Inputs & Selects ────────────────────────────────────────── */
+.alerts-input,
+.alerts-select,
+.alerts-textarea {
+    height: var(--control-height, 32px);
+    padding: 0 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+    transition:
+        border-color 0.15s ease,
+        box-shadow 0.15s ease;
+}
+
+.alerts-input:focus,
+.alerts-select:focus,
+.alerts-textarea:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.alerts-input:disabled,
+.alerts-select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.alerts-input-sm {
+    max-width: 120px;
+}
+
+.alerts-select {
+    cursor: pointer;
+    appearance: auto;
+    -webkit-appearance: auto;
+}
+
+.alerts-textarea {
+    height: auto;
+    padding: 8px;
+    resize: vertical;
+    line-height: 1.5;
+}
+
+.alerts-textarea-code {
+    font-family:
+        "SF Mono", "Monaco", "Inconsolata", "Fira Code", "Droid Sans Mono",
+        "Source Code Pro", monospace;
+    font-size: 11px;
+    line-height: 1.6;
+    tab-size: 2;
+}
+
+.alerts-label-hint {
+    font-size: 10px;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--fg-tertiary);
+}
+
+.alerts-label-hint code {
+    background: var(--surface-secondary);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-family: "SF Mono", "Monaco", "Inconsolata", monospace;
+}
+
+/* ─── Password input with toggle ──────────────────────────────── */
+.alerts-password-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.alerts-password-wrap .alerts-input {
+    flex: 1;
+    padding-right: 34px;
+}
+
+.alerts-password-toggle {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    color: var(--fg-tertiary);
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 0;
+}
+
+.alerts-password-toggle:hover {
+    color: var(--fg);
+    background: var(--surface-secondary);
+}
+
+/* ─── Checkbox ────────────────────────────────────────────────── */
+.alerts-checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--fg);
+    user-select: none;
+}
+
+.alerts-checkbox {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+/* ─── Buttons ─────────────────────────────────────────────────── */
+.alerts-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: var(--control-height, 32px);
+    padding: 0 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition:
+        background 0.15s ease,
+        color 0.15s ease,
+        border-color 0.15s ease;
+    white-space: nowrap;
+    font-family: inherit;
+}
+
+.alerts-btn:hover {
+    background: var(--surface-secondary);
+    color: var(--fg);
+}
+
+.alerts-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.alerts-btn-primary {
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-color: transparent;
+}
+
+.alerts-btn-primary:hover {
+    background: var(--accent-hover);
+    color: var(--accent-fg);
+}
+
+.alerts-btn-secondary {
+    background: var(--surface);
+    color: var(--fg-secondary);
+    border-color: var(--border);
+}
+
+.alerts-btn-secondary:hover {
+    background: var(--surface-secondary);
+    color: var(--fg);
+}
+
+.alerts-btn-danger {
+    border-color: rgba(220, 53, 69, 0.25);
+    background: var(--danger-bg);
+    color: var(--danger-fg);
+}
+
+.alerts-btn-danger:hover {
+    background: rgba(220, 53, 69, 0.2);
+}
+
+.alerts-btn-sm {
+    height: 26px;
+    padding: 0 8px;
+    font-size: 11px;
+}
+
+/* ─── Form actions row ────────────────────────────────────────── */
+.alerts-form-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0 12px;
+}
+
+.alerts-rule-form .alerts-form-actions {
+    padding-bottom: 12px;
+}
+
+/* ─── Feedback messages ───────────────────────────────────────── */
+.alerts-feedback {
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 10px;
+    border-radius: var(--radius-sm);
+}
+
+.alerts-feedback-success {
+    background: var(--success-bg);
+    color: var(--success-fg);
+    border: 1px solid rgba(40, 167, 69, 0.2);
+}
+
+.alerts-feedback-error {
+    background: var(--danger-bg);
+    color: var(--danger-fg);
+    border: 1px solid rgba(220, 53, 69, 0.2);
+}
+
+/* ─── Rule Cards ──────────────────────────────────────────────── */
+.alerts-rules-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 8px 18px 4px;
+}
+
+.alerts-rule-card {
+    border: 1px solid var(--separator);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    overflow: hidden;
+    transition: box-shadow 0.15s ease;
+}
+
+.alerts-rule-card:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.alerts-rule-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--separator);
+}
+
+.alerts-rule-card-info {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.alerts-rule-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.alerts-rule-status {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 2px 7px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
+.alerts-rule-status.enabled {
+    background: var(--success-bg);
+    color: var(--success-fg);
+    border: 1px solid rgba(40, 167, 69, 0.2);
+}
+
+.alerts-rule-status.disabled {
+    background: var(--surface-secondary);
+    color: var(--fg-tertiary);
+    border: 1px solid var(--border);
+}
+
+.alerts-rule-status.paused {
+    background: var(--warning-bg);
+    color: var(--warning-fg);
+    border: 1px solid rgba(255, 193, 7, 0.2);
+}
+
+.alerts-rule-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+/* ─── Rule card details ───────────────────────────────────────── */
+.alerts-rule-card-details {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 20px;
+    padding: 10px 14px;
+}
+
+.alerts-rule-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 80px;
+}
+
+.alerts-detail-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--fg-tertiary);
+}
+
+.alerts-detail-value {
+    font-size: 12px;
+    color: var(--fg);
+}
+
+.alerts-detail-target {
+    max-width: 240px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ─── Overlay & Dialog ────────────────────────────────────────── */
+.alerts-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.45);
+    padding: 20px;
+}
+
+.alerts-dialog {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px 22px;
+    max-width: 480px;
+    width: 100%;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+}
+
+.alerts-dialog-title {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 0 14px;
+    color: var(--fg);
+}
+
+.alerts-dialog .alerts-form-row {
+    margin-bottom: 14px;
+}
+
+.alerts-dialog .alerts-form-actions {
+    padding-bottom: 0;
+}
+
+/* ─── Responsive ──────────────────────────────────────────────── */
+@media (max-width: 640px) {
+    .alerts-form-inline {
+        flex-direction: column;
+        gap: 0;
+    }
+
+    .alerts-rule-card-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 8px;
+    }
+
+    .alerts-rule-card-actions {
+        align-self: flex-end;
+    }
+
+    .alerts-dialog {
+        max-width: 100%;
+        margin: 0 10px;
+    }
+}
+
+/* ─── Alert History Table ────────────────────────────────────── */
+.alerts-history-table-wrap {
+    overflow-x: auto;
+    padding: 4px 18px 12px;
+}
+
+.alerts-history-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.alerts-history-table thead {
+    border-bottom: 2px solid var(--separator);
+}
+
+.alerts-history-table th {
+    text-align: left;
+    padding: 8px 10px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--fg-tertiary);
+    white-space: nowrap;
+}
+
+.alerts-history-table td {
+    padding: 8px 10px;
+    color: var(--fg);
+    border-bottom: 1px solid var(--separator);
+    white-space: nowrap;
+}
+
+.alerts-history-table tbody tr:hover {
+    background: var(--surface-secondary);
+}
+
+.alerts-history-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.alerts-history-cell-time {
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-secondary) !important;
+    font-size: 11px;
+}
+
+/* ─── Alert History Status Badges ────────────────────────────── */
+.alerts-history-status {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 2px 7px;
+    border-radius: 10px;
+    white-space: nowrap;
+}
+
+.history-status-sent {
+    background: var(--success-bg);
+    color: var(--success-fg);
+    border: 1px solid rgba(40, 167, 69, 0.2);
+}
+
+.history-status-failed {
+    background: var(--danger-bg);
+    color: var(--danger-fg);
+    border: 1px solid rgba(220, 53, 69, 0.2);
+}
+
+/* ─── Notification Channels Table ──────────────────────────── */
+.channels-table-wrap {
+    overflow-x: auto;
+    padding: 0 18px 12px;
+}
+
+.channels-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.channels-table thead {
+    border-bottom: 2px solid var(--separator);
+}
+
+.channels-table th {
+    text-align: left;
+    padding: 8px 10px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--fg-tertiary);
+    white-space: nowrap;
+}
+
+.channels-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--separator);
+    vertical-align: middle;
+}
+
+.channels-table tbody tr:hover {
+    background: var(--surface-secondary);
+}
+
+.channels-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+.channels-col-channel {
+    width: 90px;
+}
+
+.channels-col-recipients {
+    width: 38%;
+}
+
+.channels-col-actions {
+    width: 40px;
+}
+
+.channels-channel-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg);
+}
+
+.channels-input-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.channels-input-row .alerts-input {
+    flex: 1;
+    height: 28px;
+    font-size: 12px;
+}
+
+.channels-save-btn {
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--fg-tertiary);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition:
+        color 0.12s,
+        border-color 0.12s,
+        background 0.12s;
+}
+
+.channels-save-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-bg);
+}
+
+.channels-save-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.channels-feedback {
+    font-size: 11px;
+    font-weight: 600;
+    flex-shrink: 0;
+    width: 18px;
+    text-align: center;
+}
+
+.channels-feedback-success {
+    color: var(--success);
+}
+
+.channels-feedback-error {
+    color: var(--danger);
+}
+
+/* ─── Recipients Preview (in Alert Rule Form) ──────────────── */
+.channels-recipients-preview {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-height: 32px;
+    padding: 4px 0;
+}
+
+.channels-recipient-tag {
+    display: inline-flex;
+    align-items: center;
+    height: 24px;
+    padding: 0 8px;
+    border-radius: 12px;
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.channels-recipients-empty {
+    font-size: 12px;
+    color: var(--fg-tertiary);
+}
+
+.channels-recipients-empty a {
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+}

@@ -24,8 +24,7 @@ function RingGauge({ pct }) {
   const radius = 32;
   const circ = 2 * Math.PI * radius;
   const fill = circ * (pct / 100);
-  const ringClass =
-    pct >= 95 ? "" : pct >= 80 ? "ring-warning" : "ring-danger";
+  const ringClass = pct >= 95 ? "" : pct >= 80 ? "ring-warning" : "ring-danger";
 
   return (
     <div className="summary-health-ring-wrap">
@@ -35,12 +34,7 @@ function RingGauge({ pct }) {
         height="80"
         viewBox="0 0 80 80"
       >
-        <circle
-          className="summary-health-ring-bg"
-          cx="40"
-          cy="40"
-          r={radius}
-        />
+        <circle className="summary-health-ring-bg" cx="40" cy="40" r={radius} />
         <circle
           className={`summary-health-ring-fill ${ringClass}`}
           cx="40"
@@ -57,6 +51,42 @@ function RingGauge({ pct }) {
   );
 }
 
+const AlertBell = ({ active, onClick, title }) => (
+  <button
+    className={`summary-alert-btn${active ? " active" : ""}`}
+    onClick={(e) => {
+      e.stopPropagation();
+      onClick();
+    }}
+    title={title}
+    aria-label={title}
+  >
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 15 15"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M7.5 1.5C4.5 1.5 2.5 4 2.5 7V10L1 12H14L12.5 10V7C12.5 4 10.5 1.5 7.5 1.5Z"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9.5 12C9.5 13.5 8.5 14 7.5 14C6.5 14 5.5 13.5 5.5 12"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+      />
+      {active && (
+        <circle cx="11.5" cy="3.5" r="2" fill="var(--accent)" stroke="none" />
+      )}
+    </svg>
+  </button>
+);
+
 function SummaryCards({
   rates30min,
   rates1hr,
@@ -64,6 +94,9 @@ function SummaryCards({
   rates7d,
   rates30d,
   windows,
+  activeAlerts,
+  onAlertSetup,
+  notificationsEnabled,
 }) {
   const summaryCards = [
     { label: "30m", title: "Last 30 min", data: rates30min },
@@ -85,28 +118,82 @@ function SummaryCards({
     <section className="summary-board">
       <div className="summary-kpi-row">
         <article className="summary-kpi-tile">
+          {notificationsEnabled && (
+            <AlertBell
+              active={activeAlerts?.has("overview-success-rate")}
+              onClick={() =>
+                onAlertSetup?.({
+                  tileId: "overview-success-rate",
+                  tileLabel: "Successful (24h)",
+                })
+              }
+              title="Configure alert for Successful"
+            />
+          )}
           <p className="summary-kpi-tile-label">Successful (24h)</p>
-          <p className="summary-kpi-tile-value">{successCount.toLocaleString()}</p>
+          <p className="summary-kpi-tile-value">
+            {successCount.toLocaleString()}
+          </p>
           <span className="summary-kpi-tile-foot kpi-foot-success">
             {healthScore}% healthy
           </span>
         </article>
 
         <article className="summary-kpi-tile">
+          {notificationsEnabled && (
+            <AlertBell
+              active={activeAlerts?.has("overview-failure-rate")}
+              onClick={() =>
+                onAlertSetup?.({
+                  tileId: "overview-failure-rate",
+                  tileLabel: "Failures (24h)",
+                })
+              }
+              title="Configure alert for Failures"
+            />
+          )}
           <p className="summary-kpi-tile-label">Failures (24h)</p>
-          <p className="summary-kpi-tile-value">{failureCount.toLocaleString()}</p>
+          <p className="summary-kpi-tile-value">
+            {failureCount.toLocaleString()}
+          </p>
           <span className="summary-kpi-tile-foot kpi-foot-danger">
             {attentionRate}% failed
           </span>
         </article>
 
         <article className="summary-kpi-tile">
+          {notificationsEnabled && (
+            <AlertBell
+              active={activeAlerts?.has("overview-total-volume")}
+              onClick={() =>
+                onAlertSetup?.({
+                  tileId: "overview-total-volume",
+                  tileLabel: "Total volume (24h)",
+                })
+              }
+              title="Configure alert for Total volume"
+            />
+          )}
           <p className="summary-kpi-tile-label">Total volume (24h)</p>
-          <p className="summary-kpi-tile-value">{totalVolume.toLocaleString()}</p>
+          <p className="summary-kpi-tile-value">
+            {totalVolume.toLocaleString()}
+          </p>
           <span className="summary-kpi-tile-foot">Workflows observed</span>
         </article>
 
         <article className="summary-kpi-tile">
+          {notificationsEnabled && (
+            <AlertBell
+              active={activeAlerts?.has("overview-p100-latency")}
+              onClick={() =>
+                onAlertSetup?.({
+                  tileId: "overview-p100-latency",
+                  tileLabel: "P100 latency (24h)",
+                })
+              }
+              title="Configure alert for P100 latency"
+            />
+          )}
           <p className="summary-kpi-tile-label">P100 latency (24h)</p>
           <p className="summary-kpi-tile-value">{p100}</p>
           <span className="summary-kpi-tile-foot">Worst-case completion</span>
@@ -116,10 +203,12 @@ function SummaryCards({
       <div className="summary-health-panel">
         <RingGauge pct={healthScore} />
         <div className="summary-health-meta">
-          <p className="summary-health-title">Overall health — {healthScore}% success rate</p>
+          <p className="summary-health-title">
+            Overall health — {healthScore}% success rate
+          </p>
           <p className="summary-health-desc">
-            Based on the latest 24-hour window across all workflows. P100 latency
-            reflects the slowest observed completion path.
+            Based on the latest 24-hour window across all workflows. P100
+            latency reflects the slowest observed completion path.
           </p>
         </div>
         <div className="summary-health-legend">
@@ -135,40 +224,59 @@ function SummaryCards({
       </div>
 
       <div className="summary-window-strip">
-        {summaryCards.map((card) => (
-          <article className="summary-window-card" key={card.label}>
-            <div className="summary-window-topline">
-              <span className="summary-window-badge">{card.label}</span>
-              <span className="summary-window-total">
-                {card.data.total.toLocaleString()}
-              </span>
-            </div>
-            <h3>{card.title}</h3>
-            <div className="summary-window-stats">
-              <div>
-                <span className="summary-window-stat-label">Success</span>
-                <strong>{card.data.success_pct}%</strong>
+        {summaryCards.map((card) => {
+          const windowTileIds = {
+            "30m": "overview-window-30m",
+            "1h": "overview-window-1h",
+            "24h": "overview-window-24h",
+            "7d": "overview-window-7d",
+            "30d": "overview-window-30d",
+          };
+          const wTileId = windowTileIds[card.label];
+          return (
+            <article className="summary-window-card" key={card.label}>
+              {notificationsEnabled && (
+                <AlertBell
+                  active={activeAlerts?.has(wTileId)}
+                  onClick={() =>
+                    onAlertSetup?.({ tileId: wTileId, tileLabel: card.title })
+                  }
+                  title={`Configure alert for ${card.title}`}
+                />
+              )}
+              <div className="summary-window-topline">
+                <span className="summary-window-badge">{card.label}</span>
+                <span className="summary-window-total">
+                  {card.data.total.toLocaleString()}
+                </span>
               </div>
-              <div>
-                <span className="summary-window-stat-label">Failed</span>
-                <strong>{card.data.failure_pct}%</strong>
+              <h3>{card.title}</h3>
+              <div className="summary-window-stats">
+                <div>
+                  <span className="summary-window-stat-label">Success</span>
+                  <strong>{card.data.success_pct}%</strong>
+                </div>
+                <div>
+                  <span className="summary-window-stat-label">Failed</span>
+                  <strong>{card.data.failure_pct}%</strong>
+                </div>
               </div>
-            </div>
-            <div className="summary-window-bar">
-              <span
-                className="summary-window-bar-success"
-                style={{ width: `${card.data.success_pct}%` }}
-              />
-              <span
-                className="summary-window-bar-failure"
-                style={{ width: `${card.data.failure_pct}%` }}
-              />
-            </div>
-            <p className="summary-window-latency">
-              P100 {formatLatency(getWindowLatency(windows, card.label))}
-            </p>
-          </article>
-        ))}
+              <div className="summary-window-bar">
+                <span
+                  className="summary-window-bar-success"
+                  style={{ width: `${card.data.success_pct}%` }}
+                />
+                <span
+                  className="summary-window-bar-failure"
+                  style={{ width: `${card.data.failure_pct}%` }}
+                />
+              </div>
+              <p className="summary-window-latency">
+                P100 {formatLatency(getWindowLatency(windows, card.label))}
+              </p>
+            </article>
+          );
+        })}
       </div>
     </section>
   );

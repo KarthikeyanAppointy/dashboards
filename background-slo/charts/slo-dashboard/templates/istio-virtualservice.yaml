@@ -1,0 +1,24 @@
+{{- if .Values.istio.enabled -}}
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ include "slo-dashboard.fullname" . }}-virtualservice
+  labels:
+    {{- include "slo-dashboard.labels" . | nindent 4 }}
+spec:
+  hosts:
+    {{- range .Values.istio.hosts }}
+    - {{ . | quote }}
+    {{- end }}
+  gateways:
+    - {{ include "slo-dashboard.fullname" . }}-gateway
+  http:
+    - match:
+        - uri:
+            prefix: "/"
+      route:
+        - destination:
+            host: {{ include "slo-dashboard.fullname" . }}
+            port:
+              number: 80
+{{- end }}

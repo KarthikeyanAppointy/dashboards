@@ -10,16 +10,75 @@ nameOverride: ""
 # -- Override the full name of the release
 fullnameOverride: ""
 
-image:
-  # -- Container image repository
-  repository: europe-west1-docker.pkg.dev/appointy-global/common/background-slo
-  # -- Overrides the image tag (default is Chart.appVersion)
-  tag: "v1"
-  # -- Image pull policy
-  pullPolicy: IfNotPresent
-  # -- Image pull secrets
-  pullSecrets:
-    - name: gcr-registry
+# -- Backend image configuration
+backend:
+  image:
+    # -- Backend image repository (Go API)
+    repository: technotech001/background-slo-backend
+    # -- Overrides the image tag (default is Chart.AppVersion)
+    tag: "v0.1.006"
+    # -- Image pull policy
+    pullPolicy: IfNotPresent
+    # -- Image pull secrets (empty for public images on Docker Hub)
+    pullSecrets: []
+  # -- Backend resource requests and limits
+  resources:
+    requests:
+      cpu: 10m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# -- Frontend configuration
+frontend:
+  image:
+    # -- Frontend image repository (Nginx serving static files)
+    repository: technotech001/background-slo-frontend
+    # -- Frontend image tag
+    tag: "v0.1.006"
+    # -- Image pull policy
+    pullPolicy: IfNotPresent
+    # -- Image pull secrets (empty for public images on Docker Hub)
+    pullSecrets: []
+  # -- Frontend resource requests and limits
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+# -- Istio configuration
+istio:
+  # -- Enable Istio Gateway and VirtualService
+  enabled: false
+  # -- Hosts for the Istio Gateway and VirtualService
+  hosts:
+    - "*"
+
+# -- Ingress configuration (alternative to Istio, enabled by default)
+ingress:
+  # -- Enable ingress
+  enabled: true
+  # -- Ingress class name
+  className: ""
+  # -- Ingress annotations
+  annotations: {}
+  #   kubernetes.io/ingress.class: nginx
+  #   cert-manager.io/cluster-issuer: letsencrypt-prod
+  # -- Ingress hostnames
+  hosts:
+    - host: slo-dashboard.local
+      paths:
+        - path: /
+          pathType: Prefix
+  # -- TLS configuration
+  tls: []
+  #   - secretName: slo-dashboard-tls
+  #     hosts:
+  #       - slo-dashboard.local
 
 # -- Environment variables passed to the container
 # These will be set directly on the pod (not via ConfigMap) for sensitive data.
@@ -48,12 +107,21 @@ configmap:
   # -- Default Elasticsearch endpoint
   # NOTE: When running inside Kubernetes, use the internal service name,
   # e.g. "http://elasticsearch-master.elasticsearch.svc.cluster.local:9200"
-  DEFAULT_ES: "cadence-1-1-0-elasticsearch-master-hl"
+  DEFAULT_ES: "http://cadence-1-1-0-elasticsearch-master-hl:9200"
   # -- Default Elasticsearch index
   DEFAULT_INDEX: "cadence-visibility"
   # -- Google OAuth Client ID (used by backend to verify ID tokens)
   # -- make sure that docker image is built with the same VITE_GOOGLE_CLIENT_ID
-  GOOGLE_CLIENT_ID: "random.apps.googleusercontent.com"
+  # -- AWS region for CloudWatch SES metrics queries
+  AWS_REGION: "us-east-1, ap-southeast-2"
+  # -- Comma-separated list of AWS regions for the SES region dropdown
+  SES_REGIONS: "us-east-1, ap-southeast-2"
+  # -- Optional SES configuration set name to filter metrics by
+  SES_CONFIG_SET_NAME: ""
+  # -- Display name shown in the SES dashboard header
+  SES_DOMAIN_NAME: "ses"
+  # -- Restrict login to @appointy.com accounts only (set to "false" to allow any Google account)
+  APPONTY_ONLY_LOGIN: "true"
 
 # -- Secret values (sensitive environment variables)
 # These will be stored as a Kubernetes Secret and injected as env vars.
@@ -61,45 +129,17 @@ secret:
   # -- PostgreSQL connection string
   # If empty, defaults to: postgres://postgres:postgres@{{ .Release.Name }}-postgresql:5432/slo_dashboard?sslmode=disable
   DATABASE_URL: ""
-
-# -- Service configuration
-service:
-  type: LoadBalancer
-  # -- Service port (should match the application port)
-  port: 8080
-
-# -- Ingress configuration
-ingress:
-  # -- Enable ingress
-  enabled: false
-  # -- Ingress class name
-  className: ""
-  # -- Ingress annotations
-  annotations: {}
-  #   kubernetes.io/ingress.class: nginx
-  #   cert-manager.io/cluster-issuer: letsencrypt-prod
-  # -- Ingress hostnames
-  hosts:
-    - host: slo-dashboard.local
-      paths:
-        - path: /
-          pathType: Prefix
-  # -- TLS configuration
-  tls: []
-  #   - secretName: slo-dashboard-tls
-  #     hosts:
-  #       - slo-dashboard.local
-
-# -- Resource requests and limits
-resources:
-  # -- Resource requests
-  requests:
-    cpu: 100m
-    memory: 128Mi
-  # -- Resource limits
-  limits:
-    cpu: 500m
-    memory: 256Mi
+  # -- AWS Access Key ID for CloudWatch SES metrics queries
+  AWS_ACCESS_KEY_ID: ""
+  # -- AWS Secret Access Key for CloudWatch SES metrics queries
+  AWS_SECRET_ACCESS_KEY: ""
+  # -- AWS Session Token (optional, for temporary credentials)
+  # AWS_SESSION_TOKEN: ""
+  # -- One-time admin setup key for RBAC bootstrap
+  # Used by POST /api/rbac/setup-admin to create the initial admin user.
+  ADMIN_KEY: ""
+  # -- Google OAuth Client ID (used by backend to verify ID tokens)
+  GOOGLE_CLIENT_ID: ""
 
 # -- Horizontal Pod Autoscaler configuration
 autoscaling:
@@ -180,6 +220,12 @@ serviceAccount:
   # -- The name of the service account to use
   # If not set and create is true, a name is generated using the fullname template
   name: ""
+  # -- Workload Identity configuration (GKE)
+  workloadIdentity:
+    # -- Enable GKE Workload Identity
+    enabled: false
+    # -- GCP service account email
+    gcpServiceAccount: ""
 
 # -- Priority class name for the pod
 priorityClassName: ""

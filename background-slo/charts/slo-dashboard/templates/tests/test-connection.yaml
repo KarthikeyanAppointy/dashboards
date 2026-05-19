@@ -11,5 +11,5 @@ spec:
     - name: wget
       image: busybox
       command: ['wget']
-      args: ['{{ include "slo-dashboard.fullname" . }}:{{ .Values.service.port }}/health']
+      args: ['{{ include "slo-dashboard.fullname" . }}:80/health']
   restartPolicy: Never

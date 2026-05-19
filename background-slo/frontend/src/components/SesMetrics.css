@@ -26,6 +26,39 @@
     letter-spacing: 0.02em;
 }
 
+.ses-region-pills {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.ses-region-pill {
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg-secondary);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.12s ease;
+    font-family: inherit;
+}
+
+.ses-region-pill:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-bg);
+}
+
+.ses-region-pill.active {
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-color: var(--accent);
+}
+
 .ses-toolbar-select {
     height: var(--control-height);
     padding: 0 8px;
@@ -54,7 +87,9 @@
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
-    transition: background 0.12s ease, border-color 0.12s ease;
+    transition:
+        background 0.12s ease,
+        border-color 0.12s ease;
 }
 
 .ses-refresh-btn:hover {
@@ -78,7 +113,9 @@
 }
 
 @keyframes ses-spin {
-    to { transform: rotate(360deg); }
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .ses-timestamp {
@@ -142,7 +179,8 @@
 }
 
 .ses-card {
-    padding: 16px;
+    position: relative;
+    padding: 16px 36px 16px 16px;
     border-radius: var(--radius-md);
     background: var(--surface);
     border: 1px solid var(--separator);
@@ -151,6 +189,34 @@
 
 .ses-card:hover {
     box-shadow: var(--shadow-sm);
+}
+
+.ses-alert-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--fg-tertiary);
+    cursor: pointer;
+    border-radius: 4px;
+    transition:
+        background 0.12s,
+        color 0.12s;
+}
+
+.ses-alert-btn:hover {
+    background: var(--surface-secondary);
+    color: var(--accent);
+}
+
+.ses-alert-btn.active {
+    color: var(--accent);
 }
 
 .ses-card-label {
@@ -178,16 +244,32 @@
 }
 
 /* Card accent colors */
-.ses-card-sends .ses-card-value { color: var(--accent); }
-.ses-card-bounces .ses-card-value { color: var(--warning); }
-.ses-card-complaints .ses-card-value { color: var(--danger); }
-.ses-card-rejects .ses-card-value { color: var(--fg-secondary); }
+.ses-card-sends .ses-card-value {
+    color: var(--accent);
+}
+.ses-card-bounces .ses-card-value {
+    color: var(--warning);
+}
+.ses-card-complaints .ses-card-value {
+    color: var(--danger);
+}
+.ses-card-rejects .ses-card-value {
+    color: var(--fg-secondary);
+}
 
 /* Rate status colors */
-.ses-rate-good { color: var(--success) !important; }
-.ses-rate-warning { color: var(--warning) !important; }
-.ses-rate-bad { color: var(--danger) !important; }
-.ses-rate-neutral { color: var(--fg) !important; }
+.ses-rate-good {
+    color: var(--success) !important;
+}
+.ses-rate-warning {
+    color: var(--warning) !important;
+}
+.ses-rate-bad {
+    color: var(--danger) !important;
+}
+.ses-rate-neutral {
+    color: var(--fg) !important;
+}
 
 /* ─── Daily Volume Section ──────────────────────────────────── */
 .ses-section {
@@ -204,6 +286,47 @@
 .ses-daily-table td {
     font-size: 13px;
     font-variant-numeric: tabular-nums;
+}
+
+/* ─── Metric Toggles ─────────────────────────────────────────── */
+.ses-metric-toggles {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.ses-metric-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.ses-metric-pill {
+    height: 26px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    background: var(--surface);
+    color: var(--fg-secondary);
+    font-size: 11px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all 0.12s ease;
+    white-space: nowrap;
+}
+
+.ses-metric-pill:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-bg);
+}
+
+.ses-metric-pill.active {
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-color: transparent;
 }
 
 /* ─── Responsive ─────────────────────────────────────────────── */

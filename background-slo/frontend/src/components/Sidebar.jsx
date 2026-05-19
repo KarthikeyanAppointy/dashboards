@@ -158,15 +158,141 @@ const IconSES = () => (
   </svg>
 );
 
-const NAV_ITEMS = [
-  { to: "/", label: "Overview", Icon: IconOverview },
-  { to: "/recent-failures", label: "Failures", Icon: IconFailures },
-  { to: "/activity-errors", label: "Activity Errors", Icon: IconActivity },
-  { to: "/p100-latency", label: "P100 Latency", Icon: IconLatency },
-  { to: "/ses", label: "SES", Icon: IconSES },
+const IconHistory = () => (
+  <svg
+    width="15"
+    height="15"
+    viewBox="0 0 15 15"
+    fill="none"
+    aria-hidden="true"
+  >
+    <circle
+      cx="7.5"
+      cy="7.5"
+      r="5.5"
+      stroke="currentColor"
+      strokeWidth="1.25"
+    />
+    <path
+      d="M7.5 4V7.5L9.5 9"
+      stroke="currentColor"
+      strokeWidth="1.25"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M4 2.5L2 4"
+      stroke="currentColor"
+      strokeWidth="1.25"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
+const IconAlerts = () => (
+  <svg
+    width="15"
+    height="15"
+    viewBox="0 0 15 15"
+    fill="none"
+    aria-hidden="true"
+  >
+    <path
+      d="M7.5 1.5C4.5 1.5 2.5 4 2.5 7V10L1 12H14L12.5 10V7C12.5 4 10.5 1.5 7.5 1.5Z"
+      stroke="currentColor"
+      strokeWidth="1.25"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M9.5 12C9.5 13.5 8.5 14 7.5 14C6.5 14 5.5 13.5 5.5 12"
+      stroke="currentColor"
+      strokeWidth="1.25"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
+const IconPeople = () => (
+  <svg
+    width="15"
+    height="15"
+    viewBox="0 0 15 15"
+    fill="none"
+    aria-hidden="true"
+  >
+    <circle
+      cx="5.5"
+      cy="4.5"
+      r="2.5"
+      stroke="currentColor"
+      strokeWidth="1.25"
+    />
+    <path
+      d="M1 13C1 10.5 3 9 5.5 9S10 10.5 10 13"
+      stroke="currentColor"
+      strokeWidth="1.25"
+      strokeLinecap="round"
+    />
+    <circle cx="11" cy="5" r="2" stroke="currentColor" strokeWidth="1.2" />
+    <path
+      d="M14 12.5C14 10.8 12.7 9.5 11 9.5C10.3 9.5 9.6 9.7 9.1 10.1"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+    />
+  </svg>
+);
+
+const IconAdmin = () => (
+  <svg
+    width="15"
+    height="15"
+    viewBox="0 0 15 15"
+    fill="none"
+    aria-hidden="true"
+  >
+    <path
+      d="M7.5 1.5C4.5 1.5 2 4 2 7v5l2-1 1.5 1L7 11l1.5 1L10 11l2 1V7c0-3-2.5-5.5-5.5-5.5z"
+      stroke="currentColor"
+      strokeWidth="1.25"
+      strokeLinejoin="round"
+    />
+    <circle cx="7.5" cy="6.5" r="2" fill="currentColor" />
+  </svg>
+);
+
+const NAV_SECTIONS = [
+  {
+    label: "Monitoring",
+    items: [
+      { to: "/", label: "Overview", Icon: IconOverview },
+      { to: "/recent-failures", label: "Failures", Icon: IconFailures },
+      { to: "/activity-errors", label: "Activity Errors", Icon: IconActivity },
+      { to: "/p100-latency", label: "P100 Latency", Icon: IconLatency },
+    ],
+  },
+  {
+    label: "Delivery",
+    items: [{ to: "/ses", label: "SES", Icon: IconSES }],
+  },
+  {
+    label: "Config",
+    items: [
+      { to: "/notifications", label: "Notifications", Icon: IconAlerts },
+      { to: "/report-history", label: "Reports", Icon: IconHistory },
+    ],
+  },
+  {
+    label: "Access",
+    items: [{ to: "/peoples", label: "Peoples", Icon: IconPeople }],
+  },
+  {
+    label: "Admin",
+    items: [{ to: "/admin/clients", label: "Clients", Icon: IconAdmin }],
+  },
 ];
 
-function Sidebar({ domainName }) {
+function Sidebar({ domainName, userPermissions }) {
   const [collapsed, setCollapsed] = useState(() => {
     const saved = localStorage.getItem("slo_dashboard_sidebar_collapsed");
     return saved === "true";
@@ -178,6 +304,19 @@ function Sidebar({ domainName }) {
       localStorage.setItem("slo_dashboard_sidebar_collapsed", next);
       return next;
     });
+  };
+
+  // Map route to permission key
+  const routeToPerm = {
+    "/": "overview",
+    "/recent-failures": "failures",
+    "/activity-errors": "activity-errors",
+    "/p100-latency": "p100-latency",
+    "/ses": "ses",
+    "/notifications": "notifications",
+    "/report-history": "report-history",
+    "/peoples": "peoples",
+    "/admin/clients": "admin",
   };
 
   return (
@@ -196,24 +335,40 @@ function Sidebar({ domainName }) {
       </div>
 
       <nav className="sidebar-nav">
-        {NAV_ITEMS.map((item) => (
-          <NavLink
-            key={item.to}
-            to={item.to}
-            end={item.to === "/"}
-            className={({ isActive }) =>
-              `sidebar-link${isActive ? " active" : ""}`
-            }
-            title={collapsed ? item.label : undefined}
-          >
-            <span className="sidebar-link-icon">
-              <item.Icon />
-            </span>
-            {!collapsed && (
-              <span className="sidebar-link-label">{item.label}</span>
-            )}
-          </NavLink>
-        ))}
+        {NAV_SECTIONS.map((section) => {
+          const visibleItems = section.items.filter((item) => {
+            const required = routeToPerm[item.to];
+            if (!required) return true;
+            return userPermissions.includes(required);
+          });
+          if (visibleItems.length === 0) return null;
+
+          return (
+            <div key={section.label} className="sidebar-section">
+              {!collapsed && (
+                <span className="sidebar-section-label">{section.label}</span>
+              )}
+              {visibleItems.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.to === "/"}
+                  className={({ isActive }) =>
+                    `sidebar-link${isActive ? " active" : ""}`
+                  }
+                  title={collapsed ? item.label : undefined}
+                >
+                  <span className="sidebar-link-icon">
+                    <item.Icon />
+                  </span>
+                  {!collapsed && (
+                    <span className="sidebar-link-label">{item.label}</span>
+                  )}
+                </NavLink>
+              ))}
+            </div>
+          );
+        })}
       </nav>
 
       <div className="sidebar-footer">

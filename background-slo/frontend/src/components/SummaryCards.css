@@ -13,10 +13,11 @@
 }
 
 .summary-kpi-tile {
+    position: relative;
     background: var(--surface);
     border: 1px solid var(--separator);
     border-radius: var(--radius-lg);
-    padding: 16px 18px;
+    padding: 16px 36px 16px 18px;
 }
 
 .summary-kpi-tile-label {
@@ -29,7 +30,9 @@
 }
 
 .summary-kpi-tile-value {
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+    font-family:
+        -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue",
+        Arial, sans-serif;
     font-size: 28px;
     font-weight: 600;
     letter-spacing: -0.03em;
@@ -165,8 +168,12 @@
     flex-shrink: 0;
 }
 
-.legend-dot-success { background: var(--accent); }
-.legend-dot-warning { background: var(--warning); }
+.legend-dot-success {
+    background: var(--accent);
+}
+.legend-dot-warning {
+    background: var(--warning);
+}
 
 /* ─── Window Strip ───────────────────────────────────────────── */
 .summary-window-strip {
@@ -176,10 +183,11 @@
 }
 
 .summary-window-card {
+    position: relative;
     background: var(--surface);
     border: 1px solid var(--separator);
     border-radius: var(--radius-lg);
-    padding: 14px 16px;
+    padding: 14px 36px 14px 16px;
 }
 
 .summary-window-topline {
@@ -267,6 +275,36 @@
     font-size: 11px;
     color: var(--fg-tertiary);
     font-weight: 500;
+}
+
+/* ─── Alert Bell Button ─────────────────────────────────────── */
+.summary-alert-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--fg-tertiary);
+    cursor: pointer;
+    border-radius: 4px;
+    transition:
+        background 0.12s,
+        color 0.12s;
+    padding: 0;
+}
+
+.summary-alert-btn:hover {
+    background: var(--surface-secondary);
+    color: var(--accent);
+}
+
+.summary-alert-btn.active {
+    color: var(--accent);
 }
 
 @media (max-width: 1100px) {

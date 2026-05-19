@@ -49,6 +49,31 @@
     background: var(--surface-secondary);
 }
 
+.tl-alert-btn {
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--fg-tertiary);
+    cursor: pointer;
+    border-radius: 3px;
+    transition:
+        color 0.12s,
+        background 0.12s;
+}
+
+.tl-alert-btn:hover {
+    background: var(--surface-secondary);
+    color: var(--accent);
+}
+
+.tl-alert-btn.active {
+    color: var(--accent);
+}
+
 .cell-tasklist code {
     display: inline-flex;
     align-items: center;
@@ -100,4 +125,15 @@ span.latency-bar.bar-low {
     color: var(--fg-secondary);
     font-family: "SF Mono", "Menlo", "Monaco", monospace;
     font-size: 12px;
+}
+
+.th-alert {
+    width: 44px;
+    text-align: center;
+}
+
+.cell-alert {
+    text-align: center;
+    vertical-align: middle;
+    width: 44px;
 }

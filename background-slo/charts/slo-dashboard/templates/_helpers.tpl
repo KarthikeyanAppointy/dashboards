@@ -40,3 +40,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{- define "slo-dashboard.backendServiceName" -}}
+{{- printf "%s-backend" (include "slo-dashboard.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}

@@ -1,7 +1,7 @@
 # =============================================================================
 # Stage 1: Build Go backend binary
 # =============================================================================
-FROM golang:1.25-alpine AS backend-builder
+FROM golang:1.25-alpine AS builder
 
 RUN apk add --no-cache ca-certificates tzdata
 
@@ -21,26 +21,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     .
 
 # =============================================================================
-# Stage 2: Build React frontend
-# =============================================================================
-FROM node:22-alpine AS frontend-builder
-
-WORKDIR /build
-
-# Copy dependency files first for better layer caching
-COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
-
-# Copy the rest of the frontend source and build
-COPY frontend/ .
-ARG VITE_GOOGLE_CLIENT_ID
-ENV VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID
-ARG VITE_APPONTY_ONLY_LOGIN
-ENV VITE_APPONTY_ONLY_LOGIN=$VITE_APPONTY_ONLY_LOGIN
-RUN npm run build
-
-# =============================================================================
-# Stage 3: Final minimal runtime image
+# Stage 2: Final minimal runtime image
 # =============================================================================
 FROM alpine:3.21
 
@@ -52,11 +33,8 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
 
-# Copy the Go binary from the backend builder
-COPY --from=backend-builder /build/server .
-
-# Copy the built frontend files (Vite outputs to 'dist')
-COPY --from=frontend-builder /build/dist ./frontend
+# Copy the Go binary from the builder stage
+COPY --from=builder /build/server .
 
 # Ensure proper ownership
 RUN chown -R appuser:appgroup /app
@@ -80,5 +58,5 @@ ENV SES_DOMAIN_NAME="ses"
 ENV SES_CONFIG_SET_NAME=""
 ENV SES_REGIONS=""
 
-# Run the Go server (serves both API and frontend)
+# Run the Go server
 ENTRYPOINT ["/app/server"]
