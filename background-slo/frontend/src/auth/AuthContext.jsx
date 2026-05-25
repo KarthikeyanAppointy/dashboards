@@ -54,11 +54,13 @@ export function AuthProvider({ children }) {
 
   // Drop-in fetch replacement that injects the Bearer token
   const authFetch = useCallback(
-    (url, options = {}) =>
-      fetch(url, {
-        ...options,
-        headers: { ...options.headers, Authorization: `Bearer ${token}` },
-      }),
+    (url, options = {}) => {
+      const headers = { ...options.headers };
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      return fetch(url, { ...options, headers });
+    },
     [token],
   );
 

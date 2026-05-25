@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useAuth } from "../auth/AuthContext";
+import WorkflowHistoryModal from "./WorkflowHistoryModal";
 import "./RecentFailures.css";
 
 const STATUS_OPTIONS = ["Failed", "TimedOut"];
@@ -225,9 +226,11 @@ function RecentFailures({
   codefacPipelines,
   onTriggerPipeline,
   selectedTenantId,
+  selectedTenant,
   notificationsEnabled,
 }) {
   const { authFetch } = useAuth();
+  const [historyWorkflow, setHistoryWorkflow] = useState(null);
   const pageSize = limit || 20;
   const currentPage = Math.floor(offset / pageSize) + 1;
   const totalPages = Math.ceil(totalFailed / pageSize);
@@ -313,6 +316,15 @@ function RecentFailures({
     onStatusFilterChange(newFilter);
   };
 
+  const canViewHistory =
+    selectedTenant?.cadence_web_url && selectedTenantId;
+
+  const handleRowClick = (workflow, e) => {
+    if (e.target.closest("button")) return;
+    if (!canViewHistory) return;
+    setHistoryWorkflow(workflow);
+  };
+
   const handleTrigger = async (workflow) => {
     if (!selectedPipelineId) return;
     const wfKey = workflow.workflow_id || workflow.run_id;
@@ -340,8 +352,22 @@ function RecentFailures({
 
   return (
     <div className="failures-section">
+      {historyWorkflow && (
+        <WorkflowHistoryModal
+          workflow={historyWorkflow}
+          tenantId={selectedTenantId}
+          onClose={() => setHistoryWorkflow(null)}
+        />
+      )}
       <div className="section-header">
-        <h2 className="section-title">Recent Failed / Timed Out Workflows</h2>
+        <div className="section-header-left">
+          <h2 className="section-title">Recent Failed / Timed Out Workflows</h2>
+          {selectedTenant && !selectedTenant.cadence_web_url && (
+            <p className="section-subtitle failures-history-hint">
+              Set Cadence Web URL in client settings to inspect workflow history on click
+            </p>
+          )}
+        </div>
         <div className="section-header-right">
           {notificationsEnabled && (
             <FailuresAlertBell
@@ -508,7 +534,16 @@ function RecentFailures({
             </thead>
             <tbody>
               {filteredFailures.map((f, idx) => (
-                <tr key={idx}>
+                <tr
+                  key={idx}
+                  className={canViewHistory ? "failures-row-clickable" : ""}
+                  onClick={(e) => handleRowClick(f, e)}
+                  title={
+                    canViewHistory
+                      ? "Click to view workflow history"
+                      : undefined
+                  }
+                >
                   {codefacPipelines &&
                     codefacPipelines.length > 0 &&
                     notificationsEnabled && (

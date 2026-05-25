@@ -9,11 +9,27 @@ const METRIC_OPTIONS = [
   { value: "volume", label: "Volume" },
   { value: "latency_p100", label: "P100 Latency" },
   { value: "workflow_failure", label: "Workflow Failure" },
+  { value: "ses_bounce_rate", label: "SES Bounce Rate" },
+  { value: "ses_complaint_rate", label: "SES Complaint Rate" },
+  { value: "ses_error_rate", label: "SES Error Rate" },
+  { value: "ses_send_volume", label: "SES Send Volume" },
+  { value: "ses_bounce_count", label: "SES Bounce Count" },
+  { value: "ses_complaint_count", label: "SES Complaint Count" },
 ];
 
 const CONDITION_OPTIONS = [
   { value: "greater_than", label: "Greater Than" },
   { value: "less_than", label: "Less Than" },
+];
+
+const COOLDOWN_OPTIONS = [
+  { value: "0m", label: "Off (fire once per breach)" },
+  { value: "5m", label: "5 min" },
+  { value: "15m", label: "15 min" },
+  { value: "30m", label: "30 min" },
+  { value: "1h", label: "1 hour" },
+  { value: "6h", label: "6 hours" },
+  { value: "24h", label: "24 hours" },
 ];
 
 const WINDOW_OPTIONS = [
@@ -38,9 +54,11 @@ const EMPTY_RULE = {
   condition_type: "greater_than",
   threshold: "",
   window: "5m",
+  cooldown: "5m",
   notification_channel: "email",
   notification_target: "",
   message_template: "",
+  ses_region: "",
   enabled: true,
 };
 
@@ -61,7 +79,19 @@ const DEFAULT_MESSAGE_TEMPLATES = {
   latency_p100:
     "Alert: {{rule_name}}\nP100 latency is {{metric_value}}ms (threshold: {{condition_type}} {{threshold}}ms)\nTriggered at {{timestamp}}",
   workflow_failure:
-    "Alert: {{rule_name}}\nWorkflow {{workflow_id}} failed\nType: {{workflow_type}} | Status: {{status}}\nTasklist: {{tasklist}} | Domain: {{domain}}",
+    "Alert: {{rule_name}}\nWorkflow {{workflow_id}} failed\nType: {{workflow_type}} | Status: {{status}}\nTasklist: {{tasklist}} | Domain: {{domain}}\nHistory: {{workflow_history}}",
+  ses_bounce_rate:
+    "SES Alert: {{rule_name}}\nRegion: {{ses_region}}\nBounce rate: {{bounce_rate}} (threshold: {{condition_type}} {{threshold}}%)\nSends: {{total_sends}} | Bounces: {{bounces}} | Complaints: {{complaints}} | Rejects: {{rejects}}",
+  ses_complaint_rate:
+    "SES Alert: {{rule_name}}\nRegion: {{ses_region}}\nComplaint rate: {{complaint_rate}} (threshold: {{condition_type}} {{threshold}}%)\nSends: {{total_sends}} | Bounces: {{bounces}} | Complaints: {{complaints}} | Rejects: {{rejects}}",
+  ses_error_rate:
+    "SES Alert: {{rule_name}}\nRegion: {{ses_region}}\nError rate: {{error_rate}} (threshold: {{condition_type}} {{threshold}}%)\nSends: {{total_sends}} | Bounces: {{bounces}} | Complaints: {{complaints}} | Rejects: {{rejects}}",
+  ses_send_volume:
+    "SES Alert: {{rule_name}}\nRegion: {{ses_region}}\nSend volume: {{total_sends}} (threshold: {{condition_type}} {{threshold}})\nBounces: {{bounces}} | Complaints: {{complaints}} | Rejects: {{rejects}}",
+  ses_bounce_count:
+    "SES Alert: {{rule_name}}\nRegion: {{ses_region}}\nBounce count: {{bounces}} (threshold: {{condition_type}} {{threshold}})\nBounce rate: {{bounce_rate}} | Error rate: {{error_rate}}",
+  ses_complaint_count:
+    "SES Alert: {{rule_name}}\nRegion: {{ses_region}}\nComplaint count: {{complaints}} (threshold: {{condition_type}} {{threshold}})\nComplaint rate: {{complaint_rate}} | Error rate: {{error_rate}}",
 };
 
 const CHANNEL_DEFS = [
@@ -91,6 +121,21 @@ const CHANNEL_DEFS = [
   },
 ];
 
+const SES_REGION_OPTIONS = [
+  { value: "", label: "Default (AWS_REGION)" },
+  { value: "us-east-1", label: "us-east-1" },
+  { value: "us-east-2", label: "us-east-2" },
+  { value: "us-west-1", label: "us-west-1" },
+  { value: "us-west-2", label: "us-west-2" },
+  { value: "eu-west-1", label: "eu-west-1" },
+  { value: "eu-west-2", label: "eu-west-2" },
+  { value: "eu-central-1", label: "eu-central-1" },
+  { value: "ap-southeast-1", label: "ap-southeast-1" },
+  { value: "ap-southeast-2", label: "ap-southeast-2" },
+  { value: "ap-northeast-1", label: "ap-northeast-1" },
+  { value: "sa-east-1", label: "sa-east-1" },
+];
+
 const REPORT_TYPE_OPTIONS = [
   { value: "slo_summary", label: "SLO Summary" },
   { value: "failure_report", label: "Failure Report" },
@@ -100,7 +145,7 @@ const REPORT_TYPE_OPTIONS = [
 
 const DEFAULT_REPORT_TEMPLATES = {
   slo_summary:
-    "SLO Summary: {{report_name}}\nClient: {{client_name}} | Period: {{frequency}}\nGenerated: {{timestamp}}\n\n{{dashboard_info}}",
+    "SLO Summary: {{report_name}}\nClient: {{client_name}} | Period: {{frequency}}\nGenerated: {{timestamp}}\n\nSuccessful (24h): {{successful_24h}}\nFailures (24h): {{failures_24h}}\nTotal Volume (24h): {{total_volume_24h}}\nP100 Latency (24h): {{p100_latency_24h}}\nSuccess Rate (24h): {{success_rate_24h}}%\nFailure Rate (24h): {{failure_rate_24h}}%\n\n{{dashboard_info}}\n\n{{ses_info}}\n\n{{p100_info}}",
   failure_report:
     "Failure Report: {{report_name}}\nPeriod: {{frequency}} | Channel: {{channel}}\nGenerated: {{timestamp}}",
   ses_delivery_report:
@@ -178,6 +223,7 @@ const EMPTY_CODEFAC_PIPELINE = {
   metric_type: "failure_rate",
   condition_type: "greater_than",
   threshold: "",
+  cooldown: "5m",
   payload_template: JSON.stringify(
     {
       text: "⚠️ Alert: {{rule_name}}\nMetric: {{metric_type}} = {{metric_value}}\nCondition: {{condition_type}} {{threshold}}\nTenant: {{tenant_id}}",
@@ -190,7 +236,9 @@ const EMPTY_CODEFAC_PIPELINE = {
       workflow_id: "{{workflow_id}}",
       run_id: "{{run_id}}",
       workflow_type: "{{workflow_type}}",
+      "workflow-type": "{{workflow-type}}",
       domain: "{{domain}}",
+      workflow_history: "{{workflow_history}}",
     },
     null,
     2,
@@ -203,9 +251,24 @@ function windowToSeconds(windowStr) {
   const match = windowStr.match(/^(\d+)([mh])$/);
   if (!match) return 300;
   const val = parseInt(match[1], 10);
+  if (val === 0) return 0;
   const unit = match[2];
   if (unit === "h") return val * 3600;
   return val * 60;
+}
+
+function secondsToWindow(seconds) {
+  if (!seconds) return "0m";
+  const map = {
+    0: "0m",
+    300: "5m",
+    900: "15m",
+    1800: "30m",
+    3600: "1h",
+    21600: "6h",
+    86400: "24h",
+  };
+  return map[seconds] || "5m";
 }
 
 /* ─── Component ─────────────────────────────────────────────────── */
@@ -543,10 +606,12 @@ function NotificationsPage({ selectedTenantId, showSnackbar }) {
       metric_type: rule.metric_type ?? "failure_rate",
       condition_type: rule.condition_type ?? "greater_than",
       threshold: rule.threshold ?? "",
-      window: rule.window ?? "5m",
+      window: secondsToWindow(rule.window_seconds) || "5m",
+      cooldown: secondsToWindow(rule.cooldown_seconds) || "5m",
       notification_channel: rule.notification_channel ?? "email",
       notification_target: rule.notification_target ?? "",
       message_template: rule.message_template ?? "",
+      ses_region: rule.ses_region ?? "",
       enabled: rule.enabled ?? true,
     });
     setRuleFeedback(null);
@@ -573,7 +638,13 @@ function NotificationsPage({ selectedTenantId, showSnackbar }) {
       setRuleFeedback({ type: "error", message: "Rule name is required." });
       return;
     }
-    if (!ruleForm.threshold || isNaN(Number(ruleForm.threshold))) {
+    const isWorkflowFailure =
+      ruleForm.metric_type === "workflow_failure" ||
+      ruleForm.metric_type === "forward_workflow";
+    if (
+      !isWorkflowFailure &&
+      (!ruleForm.threshold || isNaN(Number(ruleForm.threshold)))
+    ) {
       setRuleFeedback({
         type: "error",
         message: "A valid numeric threshold is required.",
@@ -598,14 +669,19 @@ function NotificationsPage({ selectedTenantId, showSnackbar }) {
       const body = {
         name: ruleForm.name.trim(),
         metric_type: ruleForm.metric_type,
-        condition_type: ruleForm.condition_type,
-        threshold: Number(ruleForm.threshold),
-        window_seconds: windowToSeconds(ruleForm.window),
+        alert_type: isWorkflowFailure ? "forward" : "threshold",
         notification_channel: ruleForm.notification_channel,
         notification_target: targets.join(", "),
         message_template: ruleForm.message_template,
+        ses_region: ruleForm.ses_region || "",
+        cooldown_seconds: windowToSeconds(ruleForm.cooldown),
         enabled: ruleForm.enabled,
       };
+      if (!isWorkflowFailure) {
+        body.condition_type = ruleForm.condition_type;
+        body.threshold = Number(ruleForm.threshold);
+        body.window_seconds = windowToSeconds(ruleForm.window);
+      }
       let url;
       let method;
       if (editingRuleId) {
@@ -940,6 +1016,7 @@ function NotificationsPage({ selectedTenantId, showSnackbar }) {
       metric_type: pipeline.metric_type ?? "failure_rate",
       condition_type: pipeline.condition_type ?? "greater_than",
       threshold: pipeline.threshold ?? "",
+      cooldown: secondsToWindow(pipeline.cooldown_seconds) || "5m",
       payload_template:
         pipeline.payload_template ?? EMPTY_CODEFAC_PIPELINE.payload_template,
       enabled: pipeline.enabled ?? true,
@@ -1009,6 +1086,7 @@ function NotificationsPage({ selectedTenantId, showSnackbar }) {
         metric_type: codefacForm.metric_type,
         condition_type: codefacForm.condition_type,
         payload_template: codefacForm.payload_template,
+        cooldown_seconds: windowToSeconds(codefacForm.cooldown),
         enabled: codefacForm.enabled,
       };
       if (codefacForm.metric_type !== "workflow_failure") {
@@ -1454,60 +1532,92 @@ function NotificationsPage({ selectedTenantId, showSnackbar }) {
               </select>
             </div>
 
-            <div className="alerts-form-inline">
-              <div className="alerts-form-row">
-                <label className="alerts-label">Condition</label>
-                <select
-                  className="alerts-select"
-                  value={ruleForm.condition_type}
-                  onChange={(e) =>
-                    setRuleForm((prev) => ({
-                      ...prev,
-                      condition_type: e.target.value,
-                    }))
-                  }
-                >
-                  {CONDITION_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            {ruleForm.metric_type !== "workflow_failure" &&
+              ruleForm.metric_type !== "forward_workflow" && (
+                <div className="alerts-form-inline">
+                  <div className="alerts-form-row">
+                    <label className="alerts-label">Condition</label>
+                    <select
+                      className="alerts-select"
+                      value={ruleForm.condition_type}
+                      onChange={(e) =>
+                        setRuleForm((prev) => ({
+                          ...prev,
+                          condition_type: e.target.value,
+                        }))
+                      }
+                    >
+                      {CONDITION_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-              <div className="alerts-form-row">
-                <label className="alerts-label">Threshold</label>
-                <input
-                  type="number"
-                  className="alerts-input alerts-input-sm"
-                  placeholder="0"
-                  step="any"
-                  value={ruleForm.threshold}
-                  onChange={(e) =>
-                    setRuleForm((prev) => ({
-                      ...prev,
-                      threshold: e.target.value,
-                    }))
-                  }
-                />
-              </div>
+                  <div className="alerts-form-row">
+                    <label className="alerts-label">Threshold</label>
+                    <input
+                      type="number"
+                      className="alerts-input alerts-input-sm"
+                      placeholder="0"
+                      step="any"
+                      value={ruleForm.threshold}
+                      onChange={(e) =>
+                        setRuleForm((prev) => ({
+                          ...prev,
+                          threshold: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
 
-              <div className="alerts-form-row">
-                <label className="alerts-label">Window</label>
-                <select
-                  className="alerts-select"
-                  value={ruleForm.window}
-                  onChange={(e) =>
-                    setRuleForm((prev) => ({ ...prev, window: e.target.value }))
-                  }
-                >
-                  {WINDOW_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                  <div className="alerts-form-row">
+                    <label className="alerts-label">Window</label>
+                    <select
+                      className="alerts-select"
+                      value={ruleForm.window}
+                      onChange={(e) =>
+                        setRuleForm((prev) => ({
+                          ...prev,
+                          window: e.target.value,
+                        }))
+                      }
+                    >
+                      {WINDOW_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+            <div className="alerts-form-row">
+              <label className="alerts-label">
+                Cooldown
+                <span className="alerts-label-hint">
+                  {" "}
+                  — Minimum time before this rule can fire again
+                </span>
+              </label>
+              <select
+                className="alerts-select"
+                value={ruleForm.cooldown}
+                onChange={(e) =>
+                  setRuleForm((prev) => ({
+                    ...prev,
+                    cooldown: e.target.value,
+                  }))
+                }
+              >
+                {COOLDOWN_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div className="alerts-form-inline">
@@ -1581,18 +1691,45 @@ function NotificationsPage({ selectedTenantId, showSnackbar }) {
               </div>
             </div>
 
+            {ruleForm.metric_type.startsWith("ses_") && (
+              <div className="alerts-form-row">
+                <label className="alerts-label">SES Region</label>
+                <select
+                  className="alerts-select"
+                  value={ruleForm.ses_region}
+                  onChange={(e) =>
+                    setRuleForm((prev) => ({
+                      ...prev,
+                      ses_region: e.target.value,
+                    }))
+                  }
+                >
+                  {SES_REGION_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div className="alerts-form-row">
               <label className="alerts-label">
                 Message Template
                 <span className="alerts-label-hint">
                   {" "}
-                  — Custom notification body. Variables:{" "}
-                  <code>{"{{rule_name}}"}</code>,{" "}
-                  <code>{"{{metric_type}}"}</code>,{" "}
-                  <code>{"{{metric_value}}"}</code>,{" "}
-                  <code>{"{{condition_type}}"}</code>,{" "}
-                  <code>{"{{threshold}}"}</code>,{" "}
-                  <code>{"{{alert_name}}"}</code>
+                  — Custom notification body.{" "}
+                  {ruleForm.metric_type === "workflow_failure" ||
+                  ruleForm.metric_type === "forward_workflow"
+                    ? "Variables: " +
+                      "{{rule_name}}, {{alert_name}}, {{workflow_id}}, {{run_id}}, " +
+                      "{{workflow_type}}, {{workflow-type}}, {{tasklist}}, {{status}}, {{close_time}}, " +
+                      "{{domain}}, {{workflow_history}} (GCS URL when GCS_HISTORY_BUCKET set; else inline JSON; also {{history}})"
+                    : ruleForm.metric_type.startsWith("ses_")
+                      ? "Variables: {{rule_name}}, {{metric_type}}, {{metric_value}}, {{condition_type}}, {{threshold}}, {{ses_region}}, {{total_sends}}, {{bounces}}, {{complaints}}, {{rejects}}, {{bounce_rate}}, {{complaint_rate}}, {{error_rate}}"
+                      : "Variables: " +
+                        "{{rule_name}}, {{metric_type}}, {{metric_value}}, " +
+                        "{{condition_type}}, {{threshold}}, {{alert_name}}"}
                 </span>
               </label>
               <textarea
@@ -1735,7 +1872,15 @@ function NotificationsPage({ selectedTenantId, showSnackbar }) {
                   </div>
                   <div className="alerts-rule-detail">
                     <span className="alerts-detail-label">Window</span>
-                    <span className="alerts-detail-value">{rule.window}</span>
+                    <span className="alerts-detail-value">
+                      {secondsToWindow(rule.window_seconds) || "—"}
+                    </span>
+                  </div>
+                  <div className="alerts-rule-detail">
+                    <span className="alerts-detail-label">Cooldown</span>
+                    <span className="alerts-detail-value">
+                      {secondsToWindow(rule.cooldown_seconds) || "5m"}
+                    </span>
                   </div>
                   <div className="alerts-rule-detail">
                     <span className="alerts-detail-label">Channel</span>
@@ -2094,7 +2239,13 @@ function NotificationsPage({ selectedTenantId, showSnackbar }) {
                   <code>{"{{ses_info}}"}</code>,{" "}
                   <code>{"{{dashboard_info}}"}</code>,{" "}
                   <code>{"{{p100_info}}"}</code>,{" "}
-                  <code>{"{{workflow_top_n}}"}</code>
+                  <code>{"{{workflow_top_n}}"}</code>,{" "}
+                  <code>{"{{successful_24h}}"}</code>,{" "}
+                  <code>{"{{failures_24h}}"}</code>,{" "}
+                  <code>{"{{total_volume_24h}}"}</code>,{" "}
+                  <code>{"{{p100_latency_24h}}"}</code>,{" "}
+                  <code>{"{{success_rate_24h}}"}</code>,{" "}
+                  <code>{"{{failure_rate_24h}}"}</code>
                 </span>
               </label>
               <textarea
@@ -2410,6 +2561,32 @@ function NotificationsPage({ selectedTenantId, showSnackbar }) {
 
             <div className="alerts-form-row">
               <label className="alerts-label">
+                Cooldown
+                <span className="alerts-label-hint">
+                  {" "}
+                  — Minimum time before this pipeline can fire again
+                </span>
+              </label>
+              <select
+                className="alerts-select"
+                value={codefacForm.cooldown}
+                onChange={(e) =>
+                  setCodefacForm((prev) => ({
+                    ...prev,
+                    cooldown: e.target.value,
+                  }))
+                }
+              >
+                {COOLDOWN_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="alerts-form-row">
+              <label className="alerts-label">
                 Payload Template (JSON)
                 <span className="alerts-label-hint">
                   {" "}
@@ -2420,7 +2597,10 @@ function NotificationsPage({ selectedTenantId, showSnackbar }) {
                   <code>{"{{threshold}}"}</code>, <code>{"{{tenant_id}}"}</code>
                   , <code>{"{{pipeline_name}}"}</code>,{" "}
                   <code>{"{{workflow_id}}"}</code>, <code>{"{{run_id}}"}</code>,{" "}
-                  <code>{"{{domain}}"}</code>
+                  <code>{"{{domain}}"}</code>,{" "}
+                  <code>{"{{workflow_history}}"}</code>{" "}
+                  (GCS URL when <code>GCS_HISTORY_BUCKET</code> is set; else inline JSON; also{" "}
+                  <code>{"{{history}}"}</code>)
                 </span>
               </label>
               <textarea
@@ -2569,6 +2749,12 @@ function NotificationsPage({ selectedTenantId, showSnackbar }) {
                         (o) => o.value === pipeline.condition_type,
                       )?.label ?? pipeline.condition_type}{" "}
                       {pipeline.threshold}
+                    </span>
+                  </div>
+                  <div className="alerts-rule-detail">
+                    <span className="alerts-detail-label">Cooldown</span>
+                    <span className="alerts-detail-value">
+                      {secondsToWindow(pipeline.cooldown_seconds) || "5m"}
                     </span>
                   </div>
                   {pipeline.last_triggered_at && (

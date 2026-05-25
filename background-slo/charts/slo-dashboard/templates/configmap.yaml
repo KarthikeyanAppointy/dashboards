@@ -18,3 +18,9 @@ data:
   SES_REGIONS: {{ .Values.configmap.SES_REGIONS | default "" | quote }}
   SES_CONFIG_SET_NAME: {{ .Values.configmap.SES_CONFIG_SET_NAME | default "" | quote }}
   SES_DOMAIN_NAME: {{ .Values.configmap.SES_DOMAIN_NAME | default "ses" | quote }}
+  {{- $whStorage := .Values.workflowHistory.storage | default .Values.configmap.WORKFLOW_HISTORY_STORAGE | default "auto" }}
+  {{- $whBucket := .Values.workflowHistory.bucket | default .Values.configmap.GCS_HISTORY_BUCKET | default "" }}
+  {{- $whPrefix := .Values.workflowHistory.prefix | default .Values.configmap.GCS_HISTORY_PREFIX | default "workflow-history" }}
+  WORKFLOW_HISTORY_STORAGE: {{ $whStorage | quote }}
+  GCS_HISTORY_BUCKET: {{ $whBucket | quote }}
+  GCS_HISTORY_PREFIX: {{ $whPrefix | quote }}

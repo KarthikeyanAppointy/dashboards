@@ -16,7 +16,7 @@ backend:
     # -- Backend image repository (Go API)
     repository: technotech001/background-slo-backend
     # -- Overrides the image tag (default is Chart.AppVersion)
-    tag: "v0.1.006"
+    tag: "v0.1.007"
     # -- Image pull policy
     pullPolicy: IfNotPresent
     # -- Image pull secrets (empty for public images on Docker Hub)
@@ -123,6 +123,25 @@ configmap:
   # -- Restrict login to @appointy.com accounts only (set to "false" to allow any Google account)
   APPONTY_ONLY_LOGIN: "true"
 
+# -- Workflow history uploads for Codefac/alert {{workflow_history}} placeholders
+# Prefer this block over legacy configmap.WORKFLOW_HISTORY_* keys.
+# On GKE, enable serviceAccount.workloadIdentity and grant the GCP SA roles/storage.objectCreator on the bucket.
+workflowHistory:
+  # -- Storage mode: auto (upload when bucket set), gcs (always upload), inline (embed JSON)
+  storage: auto
+  # -- GCS bucket name for history JSON objects
+  bucket: ""
+  # -- Object path prefix inside the bucket (objects: {prefix}/{domain}/{date}/{workflow}_{run}_history.json)
+  prefix: workflow-history
+  # -- Mount a GCP service account JSON key for GCS uploads (alternative to Workload Identity)
+  gcsCredentials:
+    # -- Use an existing Kubernetes secret that contains the JSON key
+    existingSecret: ""
+    # -- Key name inside the secret (file mounted as key.json)
+    secretKey: "gcs-service-account.json"
+    # -- Directory where the key file is mounted in the backend container
+    mountPath: "/var/secrets/gcs"
+
 # -- Secret values (sensitive environment variables)
 # These will be stored as a Kubernetes Secret and injected as env vars.
 secret:
@@ -138,8 +157,11 @@ secret:
   # -- One-time admin setup key for RBAC bootstrap
   # Used by POST /api/rbac/setup-admin to create the initial admin user.
   ADMIN_KEY: ""
-  # -- Google OAuth Client ID (used by backend to verify ID tokens)
-  GOOGLE_CLIENT_ID: ""
+  # -- Optional GCP access token for GCS uploads (short-lived; prefer gcsServiceAccountJson or Workload Identity)
+  GCS_ACCESS_TOKEN: ""
+  # -- GCP service account JSON key contents (stored in release secret as gcs-service-account.json)
+  # Prefer workflowHistory.gcsCredentials.existingSecret for production. Use: helm upgrade --set-file secret.gcsServiceAccountJson=./key.json
+  gcsServiceAccountJson: ""
 
 # -- Horizontal Pod Autoscaler configuration
 autoscaling:

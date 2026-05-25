@@ -26,7 +26,7 @@ const SIDEBAR_SECTIONS = [
   { key: "ses", label: "SES Dashboard" },
   { key: "notifications", label: "Notifications" },
   { key: "report-history", label: "Reports" },
-  { key: "peoples", label: "Peoples" },
+  { key: "peoples", label: "People" },
 ];
 
 /* ── Avatar helper ─────────────────────────────────────────── */
@@ -339,10 +339,13 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [query, setQuery] = useState("");
 
-  const fetchUsers = useCallback(async () => {
+  const fetchUsers = useCallback(async (opts = {}) => {
     if (!selectedTenantId) return;
+    const { showLoader = true } = opts;
     try {
-      setLoading(true);
+      if (showLoader) {
+        setLoading(true);
+      }
       setError(null);
       const res = await authFetch(
         `/api/rbac/users?tenant_id=${selectedTenantId}`,
@@ -358,7 +361,9 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
     } catch (err) {
       setError(err.message);
     } finally {
-      setLoading(false);
+      if (showLoader) {
+        setLoading(false);
+      }
     }
   }, [authFetch, selectedTenantId]);
 
@@ -438,7 +443,7 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      fetchUsers();
+      await fetchUsers({ showLoader: false });
       showSnackbar("Role updated successfully", "success");
     } catch (err) {
       showSnackbar(err.message, "error");

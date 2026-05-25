@@ -1,0 +1,206 @@
+{
+  "/Users/spidey/saastack/dashboards/background-slo/backend/main.go": {
+    "mtime": 1779617937976.632,
+    "hash": "2bba9ab1943d9a14cb5daea685f35283"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/eslint.config.js": {
+    "mtime": 1778564326683.749,
+    "hash": "3aa4b57d7f08181d86bde52a4dcb7f22"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/App.jsx": {
+    "mtime": 1779597921094.668,
+    "hash": "91b535786790ca86d69bf9f0fd830ea8"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/auth/AuthContext.jsx": {
+    "mtime": 1779597921094.678,
+    "hash": "8dc52fadb44ba5dc1a570fd0dee0d4b5"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/components/ActivityErrors.jsx": {
+    "mtime": 1778651952434.9912,
+    "hash": "a1e0839de90fe53e869cb58d988df08b"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/components/P100LatencyByWorkflow.jsx": {
+    "mtime": 1779097508098.2239,
+    "hash": "fd5a118404935910ff18bfba678ff2f1"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/components/RecentFailures.jsx": {
+    "mtime": 1779597921097.1543,
+    "hash": "30c9c4e7315f5aba7de0d8a4bc75c160"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/components/SesMetrics.jsx": {
+    "mtime": 1778933057602.2668,
+    "hash": "254e895259a2daea0ac88d6f2e6512aa"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/components/Sidebar.jsx": {
+    "mtime": 1779274778658.0125,
+    "hash": "906ee53018b4b67ba0ea8d8ddc42daf9"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/components/SummaryCards.jsx": {
+    "mtime": 1779274691122.029,
+    "hash": "531bb6d2d56a5db9a8e698415471934c"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/components/TasklistLatency.jsx": {
+    "mtime": 1778797791867.0615,
+    "hash": "d8dcd6bce9e888547d6f420bd21acb57"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/components/TenantManager.jsx": {
+    "mtime": 1778564906953.7273,
+    "hash": "4267b39e6c84854f84d763ebeb0ff6db"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/components/TenantSelector.jsx": {
+    "mtime": 1778564746691.2888,
+    "hash": "9a052badc79fe73eb061378fa1cd3c04"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/components/WorkflowTable.jsx": {
+    "mtime": 1778755783989.4888,
+    "hash": "95602a99d3bceea70da70effdcee5ca4"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/main.jsx": {
+    "mtime": 1778758726587.2214,
+    "hash": "c4311797002472170c10becda059b614"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/pages/ActivityErrorsPage.jsx": {
+    "mtime": 1778752247744.4014,
+    "hash": "333c05d7259a17d7c295f4c1c9e2e04a"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/pages/AlertSetupModal.jsx": {
+    "mtime": 1779058651360.9705,
+    "hash": "3df93624abf0e457092e104021a064ff"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/pages/AlertsPage.jsx": {
+    "mtime": 1779058581626.9053,
+    "hash": "00c01b4a9949cae1352987ccd4d34acc"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/pages/DashboardPage.jsx": {
+    "mtime": 1779274691121.8608,
+    "hash": "61ee280ed8906b15d571524b47f8b4f6"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/pages/LoginPage.jsx": {
+    "mtime": 1778998353281.271,
+    "hash": "f44fa696093df5e20d2843f512368f65"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/pages/NotificationsPage.jsx": {
+    "mtime": 1779616742039.8787,
+    "hash": "5d940cdb4ea9fc0669a47e0d37e2e736"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/pages/P100LatencyPage.jsx": {
+    "mtime": 1778752247784.3203,
+    "hash": "058e1f50fdf49b3caa99ea91d3584ddf"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/pages/PeoplesPage.jsx": {
+    "mtime": 1779290726734.5886,
+    "hash": "869ad979c7acd0802413be1c9e862b5d"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/pages/RecentFailuresPage.jsx": {
+    "mtime": 1779597921097.1213,
+    "hash": "4114c65d15101b16948231ebd4b2c49f"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/pages/ReportHistoryPage.jsx": {
+    "mtime": 1778938266724.6106,
+    "hash": "58244ab286e4a1b512792919d8907dd2"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/pages/SesDashboardPage.jsx": {
+    "mtime": 1778933045302.1682,
+    "hash": "af131a4fb4badbf0aad61058fd900da5"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/pages/TenantsPage.jsx": {
+    "mtime": 1779277593483.2878,
+    "hash": "b231ded1258e8c20fcf9ad63ea2442ec"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/src/pages/WelcomePage.jsx": {
+    "mtime": 1778939770792.4255,
+    "hash": "bce82fd3247311d53636dee5ee165dda"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/vite.config.js": {
+    "mtime": 1779046075566.9517,
+    "hash": "fd4a993657c4816096895e35d46c5e88"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/README.md": {
+    "mtime": 1778766559429.4001,
+    "hash": "a95b68eb5e5d3cb94a1ad1cf04b82949"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/Chart.yaml": {
+    "mtime": 1778954806744.1016,
+    "hash": "8b97617665e622b1121e958af55805fd"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/NOTES.txt": {
+    "mtime": 1779186029286.347,
+    "hash": "be7c3f0f5e2e184bace79c46b46f4718"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/backend-deployment.yaml": {
+    "mtime": 1779186029287.453,
+    "hash": "7d8d9270de98301fc088a327faa14a00"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/backend-service.yaml": {
+    "mtime": 1779186029286.5813,
+    "hash": "5907a7450a1e935229ac5e2abf57dabf"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/configmap.yaml": {
+    "mtime": 1779616742638.5051,
+    "hash": "8eb23065ac05652c7bacdfa0f01f923c"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/frontend-deployment.yaml": {
+    "mtime": 1779186029286.9797,
+    "hash": "d5575587217f46a01b662ab6ebb3691c"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/frontend-service.yaml": {
+    "mtime": 1779184377150.7952,
+    "hash": "0dbbb6447352ed487a163e2c48bf6009"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/hpa.yaml": {
+    "mtime": 1779186029286.6533,
+    "hash": "fcbd6734ba0492f0c3d9462c24020d71"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/ingress.yaml": {
+    "mtime": 1779186847000.2893,
+    "hash": "cdb48ba104f717efe5889308777f6fef"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/istio-gateway.yaml": {
+    "mtime": 1779186029286.6365,
+    "hash": "42867491ef753348dc3a29df5e70de70"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/istio-virtualservice.yaml": {
+    "mtime": 1779186029287.4382,
+    "hash": "bd34eaa7e403230fb2cedf03a232ac16"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/nginx-configmap.yaml": {
+    "mtime": 1779191660741.15,
+    "hash": "d2c8275e855e9397b9766eb178a62130"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/pdb.yaml": {
+    "mtime": 1778578690277.0295,
+    "hash": "634550e61a26810cb44807c3503dae79"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/serviceaccount.yaml": {
+    "mtime": 1779186029286.1992,
+    "hash": "bdedcdddebd11e3d8c045841d81ae53d"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/templates/tests/test-connection.yaml": {
+    "mtime": 1779186029287.609,
+    "hash": "e4e7ede61bcb993dbb4ada48be59adcf"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/charts/slo-dashboard/values.yaml": {
+    "mtime": 1779616743601.998,
+    "hash": "852c0209027e4ccf7323ee590ac56970"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/docker-compose.yml": {
+    "mtime": 1778961584846.8867,
+    "hash": "fefd83caa9abd1862958ede7901649f9"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/README.md": {
+    "mtime": 1778564326683.093,
+    "hash": "a28dc4cb878325f3e9e5649f3e1469ac"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/index.html": {
+    "mtime": 1778758718983.4023,
+    "hash": "8fa0ef497eaa658adaff3ffb09b09425"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/public/favicon.svg": {
+    "mtime": 1778564326684.257,
+    "hash": "7e840862161341271697daa99a40d76b"
+  },
+  "/Users/spidey/saastack/dashboards/background-slo/frontend/public/icons.svg": {
+    "mtime": 1778564326684.4663,
+    "hash": "3b4fcfcf393eca4d264dca4a4663bc37"
+  }
+}

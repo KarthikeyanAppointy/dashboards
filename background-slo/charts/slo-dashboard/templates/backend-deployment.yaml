@@ -104,14 +104,41 @@ spec:
                   {{- if not .Values.secret.ADMIN_KEY }}
                   optional: true
                   {{- end }}
+            - name: GCS_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "slo-dashboard.fullname" . }}-secret
+                  key: GCS_ACCESS_TOKEN
+                  {{- if not .Values.secret.GCS_ACCESS_TOKEN }}
+                  optional: true
+                  {{- end }}
+            {{- if include "slo-dashboard.gcsCredentialsEnabled" . }}
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: {{ .Values.workflowHistory.gcsCredentials.mountPath }}/key.json
+            - name: GCS_SERVICE_ACCOUNT_KEY_FILE
+              value: {{ .Values.workflowHistory.gcsCredentials.mountPath }}/key.json
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           volumeMounts:
+            {{- if include "slo-dashboard.gcsCredentialsEnabled" . }}
+            - name: gcs-credentials
+              mountPath: {{ .Values.workflowHistory.gcsCredentials.mountPath }}
+              readOnly: true
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
+        {{- if include "slo-dashboard.gcsCredentialsEnabled" . }}
+        - name: gcs-credentials
+          secret:
+            secretName: {{ include "slo-dashboard.gcsCredentialsSecretName" . }}
+            items:
+              - key: {{ .Values.workflowHistory.gcsCredentials.secretKey }}
+                path: key.json
+        {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

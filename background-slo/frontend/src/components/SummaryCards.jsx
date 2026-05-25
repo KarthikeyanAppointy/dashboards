@@ -93,6 +93,8 @@ function SummaryCards({
   rates1d,
   rates7d,
   rates30d,
+  selectedRate,
+  tasklistWindow,
   windows,
   activeAlerts,
   onAlertSetup,
@@ -106,13 +108,54 @@ function SummaryCards({
     { label: "30d", title: "Last 30 days", data: rates30d },
   ];
 
-  const heroData = rates1d || rates1hr || rates30min || rates7d || rates30d;
+  // Use the selected window's rate for hero metrics, fall back to 24h
+  const heroData =
+    selectedRate?.total > 0
+      ? selectedRate
+      : rates1d || rates1hr || rates30min || rates7d || rates30d;
   const healthScore = heroData?.success_pct ?? 0;
   const attentionRate = heroData?.failure_pct ?? 0;
   const totalVolume = heroData?.total ?? 0;
   const successCount = heroData?.success ?? 0;
   const failureCount = heroData?.failure ?? 0;
-  const p100 = formatLatency(getWindowLatency(windows, "24h"));
+
+  // Determine the label for the selected window
+  const windowLabels = {
+    3600: "1h",
+    10800: "3h",
+    21600: "6h",
+    43200: "12h",
+    86400: "24h",
+  };
+  const selectedLabel = windowLabels[tasklistWindow] || "24h";
+  const selectedTitle =
+    tasklistWindow === 3600
+      ? "Last 1 hour"
+      : tasklistWindow === 10800
+        ? "Last 3 hours"
+        : tasklistWindow === 21600
+          ? "Last 6 hours"
+          : tasklistWindow === 43200
+            ? "Last 12 hours"
+            : "Last 24 hours";
+
+  // Get P100 latency for the selected window from windows array
+  const selectedWindowLabel =
+    selectedLabel === "1h"
+      ? "Last 1hr"
+      : selectedLabel === "24h"
+        ? "Last 1d"
+        : selectedLabel === "30m"
+          ? "Last 30min"
+          : selectedLabel === "7d"
+            ? "Last 7d"
+            : selectedLabel === "30d"
+              ? "Last 30d"
+              : null;
+  const selectedWindow = windows?.find((w) => w.label === selectedWindowLabel);
+  const p100 = formatLatency(
+    selectedWindow?.p100_latency_ms ?? getWindowLatency(windows, "24h"),
+  );
 
   return (
     <section className="summary-board">
@@ -124,13 +167,13 @@ function SummaryCards({
               onClick={() =>
                 onAlertSetup?.({
                   tileId: "overview-success-rate",
-                  tileLabel: "Successful (24h)",
+                  tileLabel: "Successful (" + selectedLabel + ")",
                 })
               }
               title="Configure alert for Successful"
             />
           )}
-          <p className="summary-kpi-tile-label">Successful (24h)</p>
+          <p className="summary-kpi-tile-label">Successful ({selectedLabel})</p>
           <p className="summary-kpi-tile-value">
             {successCount.toLocaleString()}
           </p>
@@ -146,13 +189,13 @@ function SummaryCards({
               onClick={() =>
                 onAlertSetup?.({
                   tileId: "overview-failure-rate",
-                  tileLabel: "Failures (24h)",
+                  tileLabel: "Failures (" + selectedLabel + ")",
                 })
               }
               title="Configure alert for Failures"
             />
           )}
-          <p className="summary-kpi-tile-label">Failures (24h)</p>
+          <p className="summary-kpi-tile-label">Failures ({selectedLabel})</p>
           <p className="summary-kpi-tile-value">
             {failureCount.toLocaleString()}
           </p>
@@ -168,13 +211,15 @@ function SummaryCards({
               onClick={() =>
                 onAlertSetup?.({
                   tileId: "overview-total-volume",
-                  tileLabel: "Total volume (24h)",
+                  tileLabel: "Total volume (" + selectedLabel + ")",
                 })
               }
               title="Configure alert for Total volume"
             />
           )}
-          <p className="summary-kpi-tile-label">Total volume (24h)</p>
+          <p className="summary-kpi-tile-label">
+            Total volume ({selectedLabel})
+          </p>
           <p className="summary-kpi-tile-value">
             {totalVolume.toLocaleString()}
           </p>
@@ -188,13 +233,15 @@ function SummaryCards({
               onClick={() =>
                 onAlertSetup?.({
                   tileId: "overview-p100-latency",
-                  tileLabel: "P100 latency (24h)",
+                  tileLabel: "P100 latency (" + selectedLabel + ")",
                 })
               }
               title="Configure alert for P100 latency"
             />
           )}
-          <p className="summary-kpi-tile-label">P100 latency (24h)</p>
+          <p className="summary-kpi-tile-label">
+            P100 latency ({selectedLabel})
+          </p>
           <p className="summary-kpi-tile-value">{p100}</p>
           <span className="summary-kpi-tile-foot">Worst-case completion</span>
         </article>
@@ -207,8 +254,9 @@ function SummaryCards({
             Overall health — {healthScore}% success rate
           </p>
           <p className="summary-health-desc">
-            Based on the latest 24-hour window across all workflows. P100
-            latency reflects the slowest observed completion path.
+            Based on the latest {selectedTitle.toLowerCase()} across all
+            workflows. P100 latency reflects the slowest observed completion
+            path.
           </p>
         </div>
         <div className="summary-health-legend">

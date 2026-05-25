@@ -7,6 +7,8 @@ export default function TenantsPage({ showSnackbar }) {
   const [tenants, setTenants] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingTenant, setEditingTenant] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(null);
 
@@ -20,6 +22,7 @@ export default function TenantsPage({ showSnackbar }) {
     audience_url: "",
     notifyhub_url: "",
     notifyhub_api_key: "",
+    cadence_web_url: "",
   });
 
   const fetchTenants = useCallback(async () => {
@@ -54,11 +57,29 @@ export default function TenantsPage({ showSnackbar }) {
       audience_url: "",
       notifyhub_url: "",
       notifyhub_api_key: "",
+      cadence_web_url: "",
     });
 
   const openAddModal = () => {
     resetForm();
     setShowAddModal(true);
+  };
+
+  const openEditModal = (tenant) => {
+    setForm({
+      name: tenant.name || "",
+      domain_id: tenant.domain_id || "",
+      domain_name: tenant.domain_name || "",
+      es_endpoint: tenant.es_endpoint || "",
+      es_index: tenant.es_index || "",
+      es_api_key: tenant.es_api_key || "",
+      audience_url: tenant.audience_url || "",
+      notifyhub_url: tenant.notifyhub_url || "",
+      notifyhub_api_key: tenant.notifyhub_api_key || "",
+      cadence_web_url: tenant.cadence_web_url || "",
+    });
+    setEditingTenant(tenant);
+    setShowEditModal(true);
   };
 
   const handleAdd = async (e) => {
@@ -80,6 +101,7 @@ export default function TenantsPage({ showSnackbar }) {
       if (!body.audience_url) delete body.audience_url;
       if (!body.notifyhub_url) delete body.notifyhub_url;
       if (!body.notifyhub_api_key) delete body.notifyhub_api_key;
+      if (!body.cadence_web_url) delete body.cadence_web_url;
 
       const res = await authFetch("/api/tenants", {
         method: "POST",
@@ -96,6 +118,45 @@ export default function TenantsPage({ showSnackbar }) {
       fetchTenants();
     } catch (err) {
       showSnackbar?.(`Failed to add client: ${err.message}`, "error");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleEdit = async (e) => {
+    e.preventDefault();
+    if (
+      !form.name.trim() ||
+      !form.domain_id.trim() ||
+      !form.domain_name.trim()
+    ) {
+      showSnackbar?.("Name, Domain ID, and Domain Name are required", "error");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const body = { ...form };
+      if (!body.es_endpoint) delete body.es_endpoint;
+      if (!body.es_index) delete body.es_index;
+      if (!body.audience_url) delete body.audience_url;
+      if (!body.cadence_web_url) delete body.cadence_web_url;
+
+      const res = await authFetch(`/api/tenants?id=${editingTenant.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${res.status}`);
+      }
+      resetForm();
+      setShowEditModal(false);
+      setEditingTenant(null);
+      showSnackbar?.("Client updated successfully", "success");
+      fetchTenants();
+    } catch (err) {
+      showSnackbar?.(`Failed to update client: ${err.message}`, "error");
     } finally {
       setSubmitting(false);
     }
@@ -239,6 +300,26 @@ export default function TenantsPage({ showSnackbar }) {
                   </td>
                   <td className="tp-td tp-col-actions">
                     <button
+                      className="tp-btn tp-btn-icon-only tp-btn-edit"
+                      title={`Edit ${tenant.name}`}
+                      onClick={() => openEditModal(tenant)}
+                    >
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 14 14"
+                        fill="none"
+                      >
+                        <path
+                          d="M10.5 1.5a1.414 1.414 0 012 2l-8 8L2 12l.5-2.5 8-8z"
+                          stroke="currentColor"
+                          strokeWidth="1.3"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </button>
+                    <button
                       className="tp-btn tp-btn-icon-only tp-btn-delete"
                       title={`Remove ${tenant.name}`}
                       disabled={deleting === tenant.id}
@@ -344,6 +425,17 @@ export default function TenantsPage({ showSnackbar }) {
                   )}
                 </div>
               </div>
+              <div className="tp-modal-section">
+                <h3 className="tp-modal-section-title">Cadence (Optional)</h3>
+                <div className="tp-modal-grid">
+                  {renderField(
+                    "Cadence Web URL",
+                    "cadence_web_url",
+                    "https://cadence-web.example.com",
+                    false,
+                  )}
+                </div>
+              </div>
               <div className="tp-modal-actions">
                 <button
                   type="button"
@@ -364,6 +456,126 @@ export default function TenantsPage({ showSnackbar }) {
                     </>
                   ) : (
                     "Add Client"
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showEditModal && editingTenant && (
+        <div
+          className="tp-overlay"
+          onClick={() => {
+            setShowEditModal(false);
+            setEditingTenant(null);
+          }}
+        >
+          <div className="tp-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="tp-modal-header">
+              <h2 className="tp-modal-title">Edit Client</h2>
+              <p className="tp-modal-desc">
+                Update client tenant configuration.
+              </p>
+            </div>
+            <form className="tp-modal-body" onSubmit={handleEdit}>
+              <div className="tp-modal-section">
+                <h3 className="tp-modal-section-title">General Information</h3>
+                <div className="tp-modal-grid">
+                  {renderField(
+                    "Client Name",
+                    "name",
+                    "e.g. qa-mathnasium",
+                    true,
+                  )}
+                  {renderField("Domain ID", "domain_id", "UUID", true)}
+                  {renderField(
+                    "Domain Name",
+                    "domain_name",
+                    "e.g. qa-mathnasium",
+                    true,
+                  )}
+                </div>
+              </div>
+              <div className="tp-modal-section">
+                <h3 className="tp-modal-section-title">
+                  Elasticsearch Connection
+                </h3>
+                <div className="tp-modal-grid">
+                  {renderField(
+                    "ES Endpoint",
+                    "es_endpoint",
+                    "http://localhost:9000",
+                    false,
+                  )}
+                  {renderField(
+                    "ES Index",
+                    "es_index",
+                    "cadence-visibility",
+                    false,
+                  )}
+                  {renderField(
+                    "Audience URL",
+                    "audience_url",
+                    "e.g. qa-mathnasium-admin.appointy.com",
+                    false,
+                    "text",
+                  )}
+                </div>
+              </div>
+              <div className="tp-modal-section">
+                <h3 className="tp-modal-section-title">NotifyHub (Optional)</h3>
+                <div className="tp-modal-grid">
+                  {renderField(
+                    "NotifyHub URL",
+                    "notifyhub_url",
+                    "https://notifyhub.example.com",
+                    false,
+                  )}
+                  {renderField(
+                    "NotifyHub API Key",
+                    "notifyhub_api_key",
+                    "API key",
+                    false,
+                    "password",
+                  )}
+                </div>
+              </div>
+              <div className="tp-modal-section">
+                <h3 className="tp-modal-section-title">Cadence (Optional)</h3>
+                <div className="tp-modal-grid">
+                  {renderField(
+                    "Cadence Web URL",
+                    "cadence_web_url",
+                    "https://cadence-web.example.com",
+                    false,
+                  )}
+                </div>
+              </div>
+              <div className="tp-modal-actions">
+                <button
+                  type="button"
+                  className="tp-btn tp-btn-secondary"
+                  onClick={() => {
+                    setShowEditModal(false);
+                    setEditingTenant(null);
+                  }}
+                  disabled={submitting}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="tp-btn tp-btn-primary"
+                  disabled={submitting}
+                >
+                  {submitting ? (
+                    <>
+                      <div className="tp-spinner-xs" /> Saving...
+                    </>
+                  ) : (
+                    "Save Changes"
                   )}
                 </button>
               </div>

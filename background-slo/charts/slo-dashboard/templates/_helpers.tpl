@@ -33,6 +33,28 @@ app.kubernetes.io/name: {{ include "slo-dashboard.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
+{{- define "slo-dashboard.gcsCredentialsSecretName" -}}
+{{- if .Values.workflowHistory.gcsCredentials.existingSecret -}}
+{{- .Values.workflowHistory.gcsCredentials.existingSecret -}}
+{{- else if .Values.secret.gcsServiceAccountJson -}}
+{{- printf "%s-secret" (include "slo-dashboard.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "slo-dashboard.gcsCredentialsEnabled" -}}
+{{- if or .Values.workflowHistory.gcsCredentials.existingSecret .Values.secret.gcsServiceAccountJson -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{- define "slo-dashboard.gcsServiceAccountJsonB64" -}}
+{{- $gcsJson := .Values.secret.gcsServiceAccountJson -}}
+{{- if not (kindIs "string" $gcsJson) -}}
+{{- $gcsJson = $gcsJson | toJson -}}
+{{- end -}}
+{{- $gcsJson | b64enc -}}
+{{- end -}}
+
 {{- define "slo-dashboard.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
 {{- default (include "slo-dashboard.fullname" .) .Values.serviceAccount.name }}

@@ -17,6 +17,7 @@ function RecentFailuresPage({
   activeAlerts,
   onAlertSetup,
   selectedTenantId,
+  selectedTenant,
   notificationsEnabled,
 }) {
   const { authFetch } = useAuth();
@@ -87,6 +88,7 @@ function RecentFailuresPage({
       codefacPipelines={codefacPipelines}
       onTriggerPipeline={handleTriggerPipeline}
       selectedTenantId={selectedTenantId}
+      selectedTenant={selectedTenant}
       notificationsEnabled={notificationsEnabled}
     />
   );

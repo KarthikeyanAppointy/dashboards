@@ -23,7 +23,20 @@
   Then access: http://localhost:8080
 {{- end }}
 
-2. Connect to the database:
+2. Workflow history GCS (Codefac workflow_history placeholder):
+{{- $whBucket := .Values.workflowHistory.bucket | default .Values.configmap.GCS_HISTORY_BUCKET | default "" }}
+{{- if $whBucket }}
+   Bucket: {{ $whBucket }}
+   Prefix: {{ .Values.workflowHistory.prefix | default .Values.configmap.GCS_HISTORY_PREFIX | default "workflow-history" }}
+   Storage: {{ .Values.workflowHistory.storage | default .Values.configmap.WORKFLOW_HISTORY_STORAGE | default "auto" }}
+   GCS auth: enable serviceAccount.workloadIdentity, or mount a JSON key via
+   workflowHistory.gcsCredentials.existingSecret / secret.gcsServiceAccountJson.
+{{- else }}
+   GCS_HISTORY_BUCKET is not set — workflow history is sent inline in payloads.
+   Set workflowHistory.bucket in values to upload history to GCS.
+{{- end }}
+
+3. Connect to the database:
    The database URL is stored in the secret "{{ include "slo-dashboard.fullname" . }}-secret".
    To retrieve it:
    kubectl get secret --namespace {{ .Release.Namespace }} {{ include "slo-dashboard.fullname" . }}-secret \

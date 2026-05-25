@@ -77,7 +77,7 @@ const PAGE_META = {
   },
   "/peoples": {
     eyebrow: "Pages / Admin",
-    title: "Peoples",
+    title: "People",
     description: "Manage user roles and permissions across tenants.",
   },
   "/admin/clients": {
@@ -436,7 +436,12 @@ function AppContent() {
   const handleTasklistWindowChange = (newWindow) => {
     setTasklistWindow(newWindow);
     setOffset(0);
+    // Clear date range when a window is selected
+    setStartTime(null);
+    setEndTime(null);
     localStorage.setItem("slo_dashboard_tasklist_window", String(newWindow));
+    localStorage.removeItem("slo_dashboard_start_time");
+    localStorage.removeItem("slo_dashboard_end_time");
   };
 
   const handleStatusFilterChange = (newFilter) => {
@@ -465,19 +470,25 @@ function AppContent() {
   const handleStartTimeChange = (newTime) => {
     setStartTime(newTime);
     setOffset(0);
+    // Reset window selector when a date range is picked
+    setTasklistWindow(3600);
     localStorage.setItem(
       "slo_dashboard_start_time",
       newTime ? String(newTime) : "",
     );
+    localStorage.setItem("slo_dashboard_tasklist_window", "3600");
   };
 
   const handleEndTimeChange = (newTime) => {
     setEndTime(newTime);
     setOffset(0);
+    // Reset window selector when a date range is picked
+    setTasklistWindow(3600);
     localStorage.setItem(
       "slo_dashboard_end_time",
       newTime ? String(newTime) : "",
     );
+    localStorage.setItem("slo_dashboard_tasklist_window", "3600");
   };
 
   const handleOffsetChange = (newOffset) => {
@@ -851,6 +862,9 @@ function AppContent() {
                           setAlertModal({ tileId, tileLabel })
                         }
                         selectedTenantId={selectedTenantId}
+                        selectedTenant={tenants.find(
+                          (t) => t.id === selectedTenantId,
+                        )}
                         notificationsEnabled={notificationsEnabled}
                       />
                     ) : (

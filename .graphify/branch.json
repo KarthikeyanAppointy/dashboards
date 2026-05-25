@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "branchName": "main",
+  "worktreePath": "/Users/spidey/saastack/dashboards",
+  "upstream": "origin/main",
+  "mergeBase": "0acd3e6e1634af00d4f203f000b7df36e75f7fc8",
+  "firstSeenHead": "0acd3e6e1634af00d4f203f000b7df36e75f7fc8",
+  "lastSeenHead": "0acd3e6e1634af00d4f203f000b7df36e75f7fc8",
+  "lastAnalyzedHead": "0acd3e6e1634af00d4f203f000b7df36e75f7fc8",
+  "stale": false,
+  "staleReason": null,
+  "staleSince": null,
+  "lifecycleEvent": null,
+  "createdAt": "2026-05-22T07:47:51.708Z",
+  "updatedAt": "2026-05-24T10:19:06.708Z"
+}

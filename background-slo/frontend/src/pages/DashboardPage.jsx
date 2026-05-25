@@ -21,6 +21,8 @@ function DashboardPage({
         rates1d={data.rates_1d}
         rates7d={data.rates_7d}
         rates30d={data.rates_30d}
+        selectedRate={data.selected_rate}
+        tasklistWindow={tasklistWindow}
         windows={data.windows}
         activeAlerts={activeAlerts}
         onAlertSetup={onAlertSetup}

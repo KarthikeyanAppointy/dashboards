@@ -284,7 +284,7 @@ const NAV_SECTIONS = [
   },
   {
     label: "Access",
-    items: [{ to: "/peoples", label: "Peoples", Icon: IconPeople }],
+    items: [{ to: "/peoples", label: "People", Icon: IconPeople }],
   },
   {
     label: "Admin",

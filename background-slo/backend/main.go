@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +27,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/lib/pq"
+	"golang.org/x/oauth2/google"
 )
 
 // ============================================================
@@ -39,6 +42,18 @@ type Config struct {
 	DomainName  string
 	ESApiKey    string
 	AudienceURL string
+}
+
+// tenantESConfig builds ES query config from a tenant record.
+func tenantESConfig(t *Tenant) Config {
+	return Config{
+		ES:          t.ESEndpoint,
+		Index:       t.ESIndex,
+		DomainID:    t.DomainID,
+		DomainName:  t.DomainName,
+		ESApiKey:    t.ESApiKey,
+		AudienceURL: t.AudienceURL,
+	}
 }
 
 func getEnv(key, fallback string) string {
@@ -64,6 +79,7 @@ type Tenant struct {
 	AudienceURL     string    `json:"audience_url"`
 	NotifyHubURL    string    `json:"notifyhub_url"`
 	NotifyHubAPIKey string    `json:"notifyhub_api_key"`
+	CadenceWebURL   string    `json:"cadence_web_url"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
@@ -85,6 +101,7 @@ type AlertRule struct {
 	TileID              string     `json:"tile_id"`
 	AlertType           string     `json:"alert_type"`
 	MessageTemplate     string     `json:"message_template"`
+	CooldownSeconds     int        `json:"cooldown_seconds"`
 	LastTriggeredAt     *time.Time `json:"last_triggered_at"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
@@ -100,6 +117,7 @@ type CodefacPipeline struct {
 	ConditionType   string     `json:"condition_type"`
 	Threshold       float64    `json:"threshold"`
 	PayloadTemplate string     `json:"payload_template"`
+	CooldownSeconds int        `json:"cooldown_seconds"`
 	Enabled         bool       `json:"enabled"`
 	LastTriggeredAt *time.Time `json:"last_triggered_at"`
 	CreatedAt       time.Time  `json:"created_at"`
@@ -185,6 +203,214 @@ func newUUIDv4() string {
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func alertRuleInCooldown(lastTriggeredAt *time.Time, cooldownSeconds int) bool {
+	if cooldownSeconds <= 0 || lastTriggeredAt == nil {
+		return false
+	}
+	return time.Since(*lastTriggeredAt) < time.Duration(cooldownSeconds)*time.Second
+}
+
+func workflowAlertAlreadySent(alertRuleID int, workflowID, runID string) bool {
+	var exists int
+	err := db.QueryRow(`
+		SELECT 1 FROM alert_history
+		WHERE alert_rule_id = $1 AND workflow_id = $2 AND run_id = $3 AND status = 'sent'
+		LIMIT 1`, alertRuleID, workflowID, runID).Scan(&exists)
+	return err == nil && exists == 1
+}
+
+// workflowHistoryStorageMode returns how {{workflow_history}} / {{history}} are resolved.
+// WORKFLOW_HISTORY_STORAGE: auto (default), gcs, or inline.
+//   - auto: upload to GCS when GCS_HISTORY_BUCKET is set, otherwise inline JSON
+//   - gcs: always upload (requires GCS_HISTORY_BUCKET)
+//   - inline: embed history JSON in the payload (no GCS)
+func workflowHistoryStorageMode() string {
+	mode := strings.ToLower(strings.TrimSpace(getEnv("WORKFLOW_HISTORY_STORAGE", "auto")))
+	switch mode {
+	case "gcs", "inline", "auto":
+		return mode
+	default:
+		return "auto"
+	}
+}
+
+func workflowHistoryUseGCS() bool {
+	switch workflowHistoryStorageMode() {
+	case "inline":
+		return false
+	case "gcs":
+		return true
+	default:
+		return getEnv("GCS_HISTORY_BUCKET", "") != ""
+	}
+}
+
+func substituteWorkflowHistoryPlaceholders(payloadStr string, tenant *Tenant, workflowID, runID string) string {
+	needsHistory := strings.Contains(payloadStr, "{{history}}") ||
+		strings.Contains(payloadStr, "{{workflow_history}}")
+	if !needsHistory {
+		return payloadStr
+	}
+
+	var historyData []byte
+	var fetchErr error
+	if tenant.CadenceWebURL == "" {
+		fetchErr = fmt.Errorf("cadence_web_url not configured for this tenant")
+	} else {
+		histCtx, histCancel := context.WithTimeout(context.Background(), 90*time.Second)
+		historyData, fetchErr = fetchWorkflowHistory(histCtx, tenant.CadenceWebURL, tenant.DomainName, workflowID, runID, "cluster0")
+		histCancel()
+		if fetchErr != nil {
+			log.Printf("ERROR: fetch workflow history: %v", fetchErr)
+		}
+	}
+
+	errMsg := workflowHistoryFetchErrorMessage(tenant, fetchErr)
+	if workflowHistoryUseGCS() {
+		return substituteWorkflowHistoryGCS(payloadStr, tenant, workflowID, runID, historyData, errMsg)
+	}
+	return substituteWorkflowHistoryInline(payloadStr, historyData, errMsg)
+}
+
+func workflowHistoryFetchErrorMessage(tenant *Tenant, fetchErr error) string {
+	if fetchErr == nil {
+		return ""
+	}
+	if tenant.CadenceWebURL == "" {
+		return "(cadence_web_url not configured for this tenant)"
+	}
+	return fmt.Sprintf("(history fetch failed: %v)", fetchErr)
+}
+
+func substituteWorkflowHistoryGCS(payloadStr string, tenant *Tenant, workflowID, runID string, historyData []byte, errMsg string) string {
+	replacement := errMsg
+	if errMsg == "" {
+		objectName := fmt.Sprintf("%s/%s/%s_%s_history.json", tenant.DomainName, time.Now().Format("2006/01/02"), workflowID, runID)
+		gcsURL, err := uploadToGCS(historyData, objectName)
+		if err != nil {
+			log.Printf("ERROR: upload history to GCS: %v", err)
+			replacement = fmt.Sprintf("(history upload failed: %v)", err)
+		} else {
+			replacement = gcsURL
+		}
+	}
+	return applyWorkflowHistoryReplacement(payloadStr, replacement)
+}
+
+func substituteWorkflowHistoryInline(payloadStr string, historyData []byte, errMsg string) string {
+	var replacement interface{} = errMsg
+	if errMsg == "" {
+		var historyVal interface{}
+		if err := json.Unmarshal(historyData, &historyVal); err != nil {
+			return applyWorkflowHistoryReplacement(payloadStr, string(historyData))
+		}
+		replacement = historyVal
+	}
+	return applyWorkflowHistoryReplacement(payloadStr, replacement)
+}
+
+func applyWorkflowHistoryReplacement(payloadStr string, replacement interface{}) string {
+	replacementStr := historyReplacementString(replacement)
+	if injected, ok := injectWorkflowHistoryJSON(payloadStr, replacement); ok {
+		return injected
+	}
+	payloadStr = strings.ReplaceAll(payloadStr, "{{history}}", replacementStr)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{workflow_history}}", replacementStr)
+	return payloadStr
+}
+
+func historyReplacementString(replacement interface{}) string {
+	switch v := replacement.(type) {
+	case string:
+		return v
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(b)
+	}
+}
+
+// injectWorkflowHistoryJSON replaces {{workflow_history}} / {{history}} inside a JSON
+// payload template (string URL, error text, or inline history object).
+func injectWorkflowHistoryJSON(payloadStr string, replacement interface{}) (string, bool) {
+	var root interface{}
+	if err := json.Unmarshal([]byte(payloadStr), &root); err != nil {
+		return "", false
+	}
+
+	newRoot, changed := replaceHistoryPlaceholders(root, replacement)
+	if !changed {
+		return "", false
+	}
+	out, err := json.Marshal(newRoot)
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
+}
+
+func replaceHistoryPlaceholders(v interface{}, replacement interface{}) (interface{}, bool) {
+	switch x := v.(type) {
+	case string:
+		if x == "{{workflow_history}}" || x == "{{history}}" {
+			return replacement, true
+		}
+		return v, false
+	case map[string]interface{}:
+		changed := false
+		out := make(map[string]interface{}, len(x))
+		for k, val := range x {
+			newVal, c := replaceHistoryPlaceholders(val, replacement)
+			out[k] = newVal
+			if c {
+				changed = true
+			}
+		}
+		return out, changed
+	case []interface{}:
+		changed := false
+		out := make([]interface{}, len(x))
+		for i, val := range x {
+			newVal, c := replaceHistoryPlaceholders(val, replacement)
+			out[i] = newVal
+			if c {
+				changed = true
+			}
+		}
+		return out, changed
+	default:
+		return v, false
+	}
+}
+
+func applyCodefacWorkflowPayload(
+	payloadStr string,
+	pipe CodefacPipeline,
+	tenant *Tenant,
+	ruleName string,
+	wf RecentWorkflow,
+) string {
+	if ruleName == "" {
+		ruleName = pipe.Name
+	}
+	payloadStr = strings.ReplaceAll(payloadStr, "{{rule_name}}", ruleName)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{pipeline_name}}", pipe.Name)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{domain}}", tenant.DomainName)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{domain_id}}", tenant.DomainID)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{tenant_id}}", fmt.Sprintf("%d", tenant.ID))
+	payloadStr = strings.ReplaceAll(payloadStr, "{{workflow_id}}", wf.WorkflowID)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{run_id}}", wf.RunID)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{workflow_type}}", wf.WorkflowType)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{workflow-type}}", wf.WorkflowType)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{tasklist}}", wf.TaskList)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{status}}", wf.Status)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{close_time}}", wf.CloseTime)
+	payloadStr = strings.ReplaceAll(payloadStr, "{{idempotency_key}}", newUUIDv4())
+	return substituteWorkflowHistoryPlaceholders(payloadStr, tenant, wf.WorkflowID, wf.RunID)
 }
 
 // EnsureAlertsTable creates the alert_rules table if it doesn't exist.
@@ -371,7 +597,7 @@ type TenantStore struct {
 // List returns all tenants.
 func (s *TenantStore) List() ([]Tenant, error) {
 	rows, err := s.DB.Query(
-		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key, created_at, updated_at
+		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key, cadence_web_url, created_at, updated_at
 		 FROM tenants ORDER BY id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list tenants: %w", err)
@@ -382,7 +608,7 @@ func (s *TenantStore) List() ([]Tenant, error) {
 	for rows.Next() {
 		var t Tenant
 		if err := rows.Scan(&t.ID, &t.Name, &t.DomainID, &t.DomainName,
-			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.AudienceURL, &t.NotifyHubURL, &t.NotifyHubAPIKey, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.AudienceURL, &t.NotifyHubURL, &t.NotifyHubAPIKey, &t.CadenceWebURL, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan tenant: %w", err)
 		}
 		tenants = append(tenants, t)
@@ -394,10 +620,10 @@ func (s *TenantStore) List() ([]Tenant, error) {
 func (s *TenantStore) GetByID(id int) (*Tenant, error) {
 	var t Tenant
 	err := s.DB.QueryRow(
-		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key, created_at, updated_at
+		`SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key, cadence_web_url, created_at, updated_at
 		 FROM tenants WHERE id = $1`, id).
 		Scan(&t.ID, &t.Name, &t.DomainID, &t.DomainName,
-			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.AudienceURL, &t.NotifyHubURL, &t.NotifyHubAPIKey, &t.CreatedAt, &t.UpdatedAt)
+			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.AudienceURL, &t.NotifyHubURL, &t.NotifyHubAPIKey, &t.CadenceWebURL, &t.CreatedAt, &t.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -408,15 +634,15 @@ func (s *TenantStore) GetByID(id int) (*Tenant, error) {
 }
 
 // Create inserts a new tenant and returns it.
-func (s *TenantStore) Create(name, domainID, domainName, esEndpoint, esIndex, esApiKey, audienceURL, notifyhubURL, notifyhubAPIKey string) (*Tenant, error) {
+func (s *TenantStore) Create(name, domainID, domainName, esEndpoint, esIndex, esApiKey, audienceURL, notifyhubURL, notifyhubAPIKey, cadenceWebURL string) (*Tenant, error) {
 	var t Tenant
 	err := s.DB.QueryRow(
-		`INSERT INTO tenants (name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		 RETURNING id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key, created_at, updated_at`,
-		name, domainID, domainName, esEndpoint, esIndex, esApiKey, audienceURL, notifyhubURL, notifyhubAPIKey).
+		`INSERT INTO tenants (name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key, cadence_web_url)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		 RETURNING id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key, cadence_web_url, created_at, updated_at`,
+		name, domainID, domainName, esEndpoint, esIndex, esApiKey, audienceURL, notifyhubURL, notifyhubAPIKey, cadenceWebURL).
 		Scan(&t.ID, &t.Name, &t.DomainID, &t.DomainName,
-			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.AudienceURL, &t.NotifyHubURL, &t.NotifyHubAPIKey, &t.CreatedAt, &t.UpdatedAt)
+			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.AudienceURL, &t.NotifyHubURL, &t.NotifyHubAPIKey, &t.CadenceWebURL, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create tenant: %w", err)
 	}
@@ -434,6 +660,25 @@ func (s *TenantStore) Delete(id int) error {
 		return fmt.Errorf("tenant %d not found", id)
 	}
 	return nil
+}
+
+// Update modifies an existing tenant.
+func (s *TenantStore) Update(id int, name, domainID, domainName, esEndpoint, esIndex, esApiKey, audienceURL, notifyhubURL, notifyhubAPIKey, cadenceWebURL string) (*Tenant, error) {
+	var t Tenant
+	err := s.DB.QueryRow(
+		`UPDATE tenants SET name=$1, domain_id=$2, domain_name=$3, es_endpoint=$4, es_index=$5, es_api_key=$6, audience_url=$7, notifyhub_url=$8, notifyhub_api_key=$9, cadence_web_url=$10, updated_at=NOW()
+		 WHERE id=$11
+		 RETURNING id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key, cadence_web_url, created_at, updated_at`,
+		name, domainID, domainName, esEndpoint, esIndex, esApiKey, audienceURL, notifyhubURL, notifyhubAPIKey, cadenceWebURL, id).
+		Scan(&t.ID, &t.Name, &t.DomainID, &t.DomainName,
+			&t.ESEndpoint, &t.ESIndex, &t.ESApiKey, &t.AudienceURL, &t.NotifyHubURL, &t.NotifyHubAPIKey, &t.CadenceWebURL, &t.CreatedAt, &t.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("tenant %d not found", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("update tenant %d: %w", id, err)
+	}
+	return &t, nil
 }
 
 // SeedDefault creates or updates a default tenant from environment variables.
@@ -458,7 +703,7 @@ func (s *TenantStore) SeedDefault() error {
 
 	if count == 0 {
 		// Table is empty — create default tenant
-		tenant, err := s.Create(name, domainID, domainName, esEndpoint, esIndex, esApiKey, "", "", "")
+		tenant, err := s.Create(name, domainID, domainName, esEndpoint, esIndex, esApiKey, "", "", "", "")
 		if err != nil {
 			return fmt.Errorf("seed default tenant: %w", err)
 		}
@@ -557,9 +802,11 @@ type gcpTokenEntry struct {
 }
 
 var (
-	dashboardCache sync.Map // key: tenantID (int) -> *dashboardCacheEntry
-	sesCache       sync.Map // key: "tenantID:region" (string) -> *sesCacheEntry
-	gcpTokenCache  sync.Map // key: audienceURL (string) -> *gcpTokenEntry
+	dashboardCache   sync.Map // key: tenantID (int) -> *dashboardCacheEntry
+	sesCache         sync.Map // key: "tenantID:region" (string) -> *sesCacheEntry
+	gcpTokenCache    sync.Map // key: audienceURL (string) -> *gcpTokenEntry
+	notifiedFailures sync.Map // key: "tenantID:ruleID:workflowID:runID" -> timestamp (avoids re-sending same failure)
+	triggeredRules   sync.Map // key: "tenantID:ruleID" -> bool (tracks if a threshold rule already fired for the current breach episode)
 )
 
 // generateToken returns a 32-byte cryptographically-random URL-safe token.
@@ -582,6 +829,68 @@ type googleTokenInfo struct {
 	Aud              string `json:"aud"`
 	Error            string `json:"error"`
 	ErrorDescription string `json:"error_description"`
+}
+
+const googleOAuthClientIDSuffix = ".apps.googleusercontent.com"
+
+// sanitizeGoogleClientID trims a value and strips junk accidentally glued on by a
+// broken shell line continuation, e.g. "...com"ADMIN_KEY=admin@123
+func sanitizeGoogleClientID(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if idx := strings.Index(raw, googleOAuthClientIDSuffix); idx >= 0 {
+		clean := raw[:idx+len(googleOAuthClientIDSuffix)]
+		if clean != raw {
+			log.Printf(
+				"WARN: GOOGLE_CLIENT_ID had extra characters %q after the client id; "+
+					"put each VAR=value on its own line (blank line after \\) when using shell line continuation",
+				raw[len(clean):],
+			)
+		}
+		return clean
+	}
+	return raw
+}
+
+// allowedGoogleClientIDs returns OAuth client IDs from GOOGLE_CLIENT_ID and/or
+// comma-separated GOOGLE_CLIENT_IDS. Empty means audience check is skipped.
+func allowedGoogleClientIDs() []string {
+	var ids []string
+	seen := make(map[string]struct{})
+	for _, key := range []string{"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_IDS"} {
+		raw := getEnv(key, "")
+		if raw == "" {
+			continue
+		}
+		for _, part := range strings.Split(raw, ",") {
+			id := sanitizeGoogleClientID(part)
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func googleTokenAudienceAllowed(aud string) bool {
+	allowed := allowedGoogleClientIDs()
+	if len(allowed) == 0 {
+		return true
+	}
+	aud = strings.TrimSpace(aud)
+	for _, id := range allowed {
+		if aud == id {
+			return true
+		}
+	}
+	return false
 }
 
 // authVerifyHandler handles POST /api/auth/verify.
@@ -619,9 +928,13 @@ func authVerifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Optionally verify the audience matches our client ID.
-	if clientID := getEnv("GOOGLE_CLIENT_ID", ""); clientID != "" && info.Aud != clientID {
-		writeJSONError(w, "token audience mismatch", http.StatusUnauthorized)
+	// Optionally verify the audience matches a configured OAuth client ID.
+	if !googleTokenAudienceAllowed(info.Aud) {
+		expected := strings.Join(allowedGoogleClientIDs(), ", ")
+		writeJSONError(w, fmt.Sprintf(
+			"token audience mismatch: got %q, expected %s (must match VITE_GOOGLE_CLIENT_ID on the frontend)",
+			strings.TrimSpace(info.Aud), expected,
+		), http.StatusUnauthorized)
 		return
 	}
 
@@ -661,17 +974,20 @@ func authVerifyHandler(w http.ResponseWriter, r *http.Request) {
 func authMeHandler(w http.ResponseWriter, r *http.Request) {
 	token := extractBearerToken(r)
 	if token == "" {
-		writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+		logAuthFailure(r, "missing or invalid bearer token")
+		writeJSONError(w, "unauthorized: missing or invalid bearer token", http.StatusUnauthorized)
 		return
 	}
 	val, ok := sessions.Load(token)
 	if !ok {
-		writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+		logAuthFailure(r, fmt.Sprintf("session not found (token prefix=%s…)", tokenPrefix(token)))
+		writeJSONError(w, "unauthorized: session not found", http.StatusUnauthorized)
 		return
 	}
 	s := val.(session)
 	if time.Now().After(s.Expiry) {
 		sessions.Delete(token)
+		logAuthFailure(r, fmt.Sprintf("session expired for %s", s.Email))
 		writeJSONError(w, "session expired", http.StatusUnauthorized)
 		return
 	}
@@ -688,29 +1004,64 @@ func extractBearerToken(r *http.Request) string {
 	if !strings.HasPrefix(auth, "Bearer ") {
 		return ""
 	}
-	return strings.TrimPrefix(auth, "Bearer ")
+	token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	if token == "" || token == "null" || token == "undefined" {
+		return ""
+	}
+	return token
+}
+
+func logAuthFailure(r *http.Request, reason string) {
+	log.Printf("AUTH FAIL: %s %s — %s (remote=%s)", r.Method, r.URL.Path, reason, r.RemoteAddr)
 }
 
 // requireAuth wraps a handler and returns 401 if the request has no valid session.
 func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
 		token := extractBearerToken(r)
 		if token == "" {
-			writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+			reason := "missing or invalid bearer token"
+			if authHeader != "" {
+				reason = fmt.Sprintf("invalid authorization header (got %q)", authHeader)
+			}
+			logAuthFailure(r, reason)
+			writeJSONError(w, "unauthorized: "+reason, http.StatusUnauthorized)
 			return
 		}
 		val, ok := sessions.Load(token)
 		if !ok {
-			writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+			logAuthFailure(r, fmt.Sprintf("session not found (token prefix=%s…)", tokenPrefix(token)))
+			writeJSONError(w, "unauthorized: session not found", http.StatusUnauthorized)
 			return
 		}
 		if s := val.(session); time.Now().After(s.Expiry) {
 			sessions.Delete(token)
+			logAuthFailure(r, fmt.Sprintf("session expired for %s (expired at %s)", s.Email, s.Expiry.Format(time.RFC3339)))
 			writeJSONError(w, "session expired", http.StatusUnauthorized)
 			return
 		}
 		next(w, r)
 	}
+}
+
+func tokenPrefix(token string) string {
+	if len(token) <= 8 {
+		return token
+	}
+	return token[:8]
+}
+
+func sessionEmailFromRequest(r *http.Request) string {
+	token := extractBearerToken(r)
+	if token == "" {
+		return ""
+	}
+	val, ok := sessions.Load(token)
+	if !ok {
+		return ""
+	}
+	return val.(session).Email
 }
 
 // requirePermission checks that the authenticated user has the required permission for this tenant.
@@ -720,12 +1071,14 @@ func requirePermission(permission string) func(http.HandlerFunc) http.HandlerFun
 			// First, require authentication
 			token := extractBearerToken(r)
 			if token == "" {
-				writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+				logAuthFailure(r, "missing or invalid bearer token (requirePermission)")
+				writeJSONError(w, "unauthorized: missing or invalid bearer token", http.StatusUnauthorized)
 				return
 			}
 			val, ok := sessions.Load(token)
 			if !ok {
-				writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+				logAuthFailure(r, fmt.Sprintf("session not found (requirePermission, token prefix=%s…)", tokenPrefix(token)))
+				writeJSONError(w, "unauthorized: session not found", http.StatusUnauthorized)
 				return
 			}
 			s := val.(session)
@@ -945,6 +1298,7 @@ type APIResponse struct {
 	Rates1d         RateData               `json:"rates_1d"`
 	Rates7d         RateData               `json:"rates_7d"`
 	Rates30d        RateData               `json:"rates_30d"`
+	SelectedRate    RateData               `json:"selected_rate"`
 	RecentFailed    []RecentWorkflow       `json:"recent_failed"`
 	TotalFailed     int                    `json:"total_failed"`
 	TasklistLatency []TasklistLatencyEntry `json:"tasklist_latency"`
@@ -1114,14 +1468,27 @@ func buildMsearchBody(cfg Config, nowNanos int64, limit int, tasklistWindow int6
 
 	// --- Window queries ---
 	for _, w := range windows {
-		fromNanos := nowNanos - (w.Seconds * 1_000_000_000)
+		var windowFromNanos int64
+		var windowToNanos int64
+		if fromNanos > 0 {
+			// Datepicker is active — use the custom time range for all windows
+			windowFromNanos = fromNanos
+			windowToNanos = toNanos
+			if windowToNanos <= 0 {
+				windowToNanos = nowNanos
+			}
+		} else {
+			// No datepicker — use relative window
+			windowFromNanos = nowNanos - (w.Seconds * 1_000_000_000)
+			windowToNanos = nowNanos
+		}
 
 		// Header line
 		header := map[string]string{"index": cfg.Index}
 		_ = enc.Encode(header)
 
 		// Query body
-		body := buildWindowQuery(fromNanos, nowNanos, domainFilter)
+		body := buildWindowQuery(windowFromNanos, windowToNanos, domainFilter)
 		_ = enc.Encode(body)
 	}
 
@@ -1131,8 +1498,12 @@ func buildMsearchBody(cfg Config, nowNanos int64, limit int, tasklistWindow int6
 	_ = enc.Encode(buildRecentQuery(statusFilter, domainFilter, limit, tasklistFilter, fromNanos, toNanos, offset))
 
 	// --- Tasklist avg latency ---
+	tlFromNanos := nowNanos - (tasklistWindow * 1_000_000_000)
+	if fromNanos > 0 {
+		tlFromNanos = fromNanos
+	}
 	_ = enc.Encode(header)
-	_ = enc.Encode(buildTasklistLatencyQuery(nowNanos, domainFilter, tasklistWindow))
+	_ = enc.Encode(buildTasklistLatencyQuery(nowNanos, domainFilter, tasklistWindow, tlFromNanos))
 
 	// --- Activity errors (with status filter) ---
 	if activityErrorField != "" {
@@ -1148,6 +1519,15 @@ func buildMsearchBody(cfg Config, nowNanos int64, limit int, tasklistWindow int6
 	}
 	_ = enc.Encode(header)
 	_ = enc.Encode(buildP100ByWorkflowTypeQuery(nowNanos, domainFilter, p100FromNanos, toNanos))
+
+	// --- Dynamic window for the selected tasklistWindow ---
+	// Adds a window matching the user's window selector so summary cards
+	// (success/failure rates, volume) reflect the selected time range.
+	if fromNanos <= 0 {
+		dynFromNanos := nowNanos - (tasklistWindow * 1_000_000_000)
+		_ = enc.Encode(header)
+		_ = enc.Encode(buildWindowQuery(dynFromNanos, nowNanos, domainFilter))
+	}
 
 	return buf.Bytes()
 }
@@ -1301,8 +1681,8 @@ func buildRecentQuery(statuses []int, domainFilter []interface{}, limit int, tas
 
 // buildTasklistLatencyQuery constructs an ES query to get avg latency per tasklist
 // for completed workflows in the last hour.
-func buildTasklistLatencyQuery(nowNanos int64, domainFilter []interface{}, windowSeconds int64) map[string]interface{} {
-	fromNanos := nowNanos - (windowSeconds * 1_000_000_000)
+func buildTasklistLatencyQuery(nowNanos int64, domainFilter []interface{}, windowSeconds int64, windowFromNanos int64) map[string]interface{} {
+	fromNanos := windowFromNanos
 
 	must := []interface{}{
 		map[string]interface{}{
@@ -1727,11 +2107,30 @@ func getGCPIdentityToken(audienceURL string) (string, error) {
 	return token, nil
 }
 
+// resolveESBaseURL returns the HTTP base URL for ES _msearch and whether GCP audience auth applies.
+// When audience_url is set, requests go to that URL with a Bearer token.
+// When audience_url is empty, requests go directly to es_endpoint (optionally with x-api-key).
+func resolveESBaseURL(cfg Config) (baseURL string, useAudienceAuth bool, err error) {
+	es := strings.TrimRight(strings.TrimSpace(cfg.ES), "/")
+	audience := strings.TrimRight(strings.TrimSpace(cfg.AudienceURL), "/")
+	if audience != "" {
+		return audience, true, nil
+	}
+	if es == "" {
+		return "", false, fmt.Errorf("es_endpoint not configured")
+	}
+	return es, false, nil
+}
+
 func queryElasticsearch(cfg Config, limit int, tasklistWindow int64, statusFilter []int, tasklistFilter []string, fromNanos, toNanos int64, offset int, activityErrorField string, activityStatusConditions []int, activityErrorDetailField string) (*esMultiSearchResponse, error) {
 	nowNanos := time.Now().UnixNano()
 	body := buildMsearchBody(cfg, nowNanos, limit, tasklistWindow, statusFilter, tasklistFilter, fromNanos, toNanos, offset, activityErrorField, activityStatusConditions, activityErrorDetailField)
 
-	url := fmt.Sprintf("%s/_msearch", strings.TrimRight(cfg.ES, "/"))
+	baseURL, useAudienceAuth, err := resolveESBaseURL(cfg)
+	if err != nil {
+		return nil, err
+	}
+	url := baseURL + "/_msearch"
 
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -1739,17 +2138,13 @@ func queryElasticsearch(cfg Config, limit int, tasklistWindow int64, statusFilte
 	}
 	req.Header.Set("Content-Type", "application/x-ndjson")
 
-	// Use GCP identity token (Bearer auth) if audience_url is set.
-	// Fall back to x-api-key for backward compatibility.
-	if cfg.AudienceURL != "" {
+	if useAudienceAuth {
 		token, err := getGCPIdentityToken(cfg.AudienceURL)
 		if err != nil {
-			log.Printf("WARN: failed to get GCP identity token for %s: %v", cfg.AudienceURL, err)
-		} else if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
+			return nil, fmt.Errorf("GCP identity token for audience %s: %w", cfg.AudienceURL, err)
 		}
-	}
-	if cfg.ESApiKey != "" && req.Header.Get("Authorization") == "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else if cfg.ESApiKey != "" {
 		req.Header.Set("x-api-key", cfg.ESApiKey)
 	}
 
@@ -1789,11 +2184,16 @@ func queryElasticsearch(cfg Config, limit int, tasklistWindow int64, statusFilte
 // ============================================================
 
 // buildResponse assembles the final APIResponse from the _msearch results.
-func buildResponse(cfg Config, tenantID int, msResp *esMultiSearchResponse, limit int, statusFilter []int, activityErrorField string, activityErrorDetailField string) (APIResponse, int) {
+func buildResponse(cfg Config, tenantID int, msResp *esMultiSearchResponse, limit int, statusFilter []int, activityErrorField string, activityErrorDetailField string, tasklistWindow int64) (APIResponse, int) {
 	responses := msResp.Responses
 	expected := len(windows) + 3 // window queries + recent failed/timed-out + tasklist latency + p100 by workflow type
 	if activityErrorField != "" {
 		expected++ // + activity error query
+	}
+	// Check if a dynamic window was added for the selected tasklistWindow
+	hasDynamicWindow := tasklistWindow > 0
+	if hasDynamicWindow {
+		expected++ // + dynamic window for selected range
 	}
 
 	// Ensure we have enough responses
@@ -1940,6 +2340,33 @@ func buildResponse(cfg Config, tenantID int, msResp *esMultiSearchResponse, limi
 
 	ts := time.Now().Format("2006-01-02 15:04:05")
 
+	// Compute selected rate from the dynamic window response (last response)
+	selectedRate := RateData{}
+	if hasDynamicWindow && len(responses) > 0 {
+		dynIdx := len(responses) - 1
+		if dynIdx >= 0 {
+			dynResp := responses[dynIdx]
+			dynWC := WindowConfig{Label: fmt.Sprintf("Selected %ds", tasklistWindow), Seconds: tasklistWindow}
+			dynWD := parseWindowResponse(dynResp, dynWC)
+			total := dynWD.Started
+			failure := dynWD.Failed + dynWD.TimedOut
+			success := total - failure
+			successPct := "N/A"
+			failurePct := "N/A"
+			if total > 0 {
+				successPct = fmt.Sprintf("%.1f", float64(success)/float64(total)*100)
+				failurePct = fmt.Sprintf("%.1f", float64(failure)/float64(total)*100)
+			}
+			selectedRate = RateData{
+				SuccessPct: successPct,
+				FailurePct: failurePct,
+				Total:      total,
+				Success:    success,
+				Failure:    failure,
+			}
+		}
+	}
+
 	return APIResponse{
 		DomainName:      cfg.DomainName,
 		TenantID:        tenantID,
@@ -1950,6 +2377,7 @@ func buildResponse(cfg Config, tenantID int, msResp *esMultiSearchResponse, limi
 		Rates1d:         rate1d,
 		Rates7d:         rate7d,
 		Rates30d:        rate30d,
+		SelectedRate:    selectedRate,
 		RecentFailed:    recentFailed,
 		TotalFailed:     totalFailed,
 		TasklistLatency: tasklistLatency,
@@ -2215,15 +2643,7 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 		tenant = &tenants[0]
 	}
 
-	// Build per-request config from tenant data
-	cfg := Config{
-		ES:          tenant.ESEndpoint,
-		Index:       tenant.ESIndex,
-		DomainID:    tenant.DomainID,
-		DomainName:  tenant.DomainName,
-		ESApiKey:    tenant.ESApiKey,
-		AudienceURL: tenant.AudienceURL,
-	}
+	cfg := tenantESConfig(tenant)
 
 	// Query Elasticsearch
 	msResp, err := queryElasticsearch(cfg, limit, tasklistWindow, statusFilter, tasklistFilter, fromNanos, toNanos, offset, activityErrorField, activityStatusConditions, activityErrorDetailField)
@@ -2234,7 +2654,7 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build the response
-	apiResp, _ := buildResponse(cfg, tenant.ID, msResp, limit, statusFilter, activityErrorField, activityErrorDetailField)
+	apiResp, _ := buildResponse(cfg, tenant.ID, msResp, limit, statusFilter, activityErrorField, activityErrorDetailField, tasklistWindow)
 
 	// Serialize and write
 	writeJSON(w, apiResp, http.StatusOK)
@@ -2280,6 +2700,7 @@ func tenantsHandler(w http.ResponseWriter, r *http.Request) {
 			AudienceURL     string `json:"audience_url"`
 			NotifyHubURL    string `json:"notifyhub_url"`
 			NotifyHubAPIKey string `json:"notifyhub_api_key"`
+			CadenceWebURL   string `json:"cadence_web_url"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSONError(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
@@ -2307,13 +2728,95 @@ func tenantsHandler(w http.ResponseWriter, r *http.Request) {
 			req.ESIndex = "cadence-visibility"
 		}
 
-		tenant, err := tenantStore.Create(req.Name, req.DomainID, req.DomainName, req.ESEndpoint, req.ESIndex, req.ESApiKey, req.AudienceURL, req.NotifyHubURL, req.NotifyHubAPIKey)
+		tenant, err := tenantStore.Create(req.Name, req.DomainID, req.DomainName, req.ESEndpoint, req.ESIndex, req.ESApiKey, req.AudienceURL, req.NotifyHubURL, req.NotifyHubAPIKey, req.CadenceWebURL)
 		if err != nil {
 			log.Printf("ERROR: create tenant: %v", err)
 			writeJSONError(w, fmt.Sprintf("failed to create tenant: %v", err), http.StatusInternalServerError)
 			return
 		}
+
+		// Grant the creating user access to the new tenant via RBAC
+		userEmail := getUserEmailFromRequest(r)
+		if userEmail != "" {
+			// Determine the user's role — if they are an admin anywhere, grant admin on the new tenant
+			newRole := "admin"
+			newPerms := []string{
+				"admin", "overview", "failures", "activity-errors", "p100-latency",
+				"ses", "notifications", "report-history", "peoples",
+			}
+
+			db.Exec(`
+				INSERT INTO rbac (user_email, tenant_id, role, permissions, updated_at, last_activity)
+				VALUES ($1, $2, $3, $4, NOW(), NOW())
+				ON CONFLICT (user_email, tenant_id) DO NOTHING`,
+				userEmail, tenant.ID, newRole, pq.Array(newPerms))
+		}
+
 		writeJSON(w, tenant, http.StatusCreated)
+
+	case http.MethodPut:
+		idStr := r.URL.Query().Get("id")
+		if idStr == "" {
+			writeJSONError(w, "missing id", http.StatusBadRequest)
+			return
+		}
+		var tenantID int
+		if _, err := fmt.Sscanf(idStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+			writeJSONError(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+
+		var req struct {
+			Name            string `json:"name"`
+			DomainID        string `json:"domain_id"`
+			DomainName      string `json:"domain_name"`
+			ESEndpoint      string `json:"es_endpoint"`
+			ESIndex         string `json:"es_index"`
+			ESApiKey        string `json:"es_api_key"`
+			AudienceURL     string `json:"audience_url"`
+			NotifyHubURL    string `json:"notifyhub_url"`
+			NotifyHubAPIKey string `json:"notifyhub_api_key"`
+			CadenceWebURL   string `json:"cadence_web_url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		// Use existing values for empty fields
+		existing, err := tenantStore.GetByID(tenantID)
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("get tenant: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if existing == nil {
+			writeJSONError(w, "tenant not found", http.StatusNotFound)
+			return
+		}
+
+		if req.Name == "" {
+			req.Name = existing.Name
+		}
+		if req.DomainID == "" {
+			req.DomainID = existing.DomainID
+		}
+		if req.DomainName == "" {
+			req.DomainName = existing.DomainName
+		}
+		if req.ESEndpoint == "" {
+			req.ESEndpoint = existing.ESEndpoint
+		}
+		if req.ESIndex == "" {
+			req.ESIndex = existing.ESIndex
+		}
+
+		updated, err := tenantStore.Update(tenantID, req.Name, req.DomainID, req.DomainName, req.ESEndpoint, req.ESIndex, req.ESApiKey, req.AudienceURL, req.NotifyHubURL, req.NotifyHubAPIKey, req.CadenceWebURL)
+		if err != nil {
+			log.Printf("ERROR: update tenant %d: %v", tenantID, err)
+			writeJSONError(w, fmt.Sprintf("failed to update tenant: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, updated, http.StatusOK)
 
 	default:
 		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -3597,7 +4100,7 @@ func alertsRulesHandler(w http.ResponseWriter, r *http.Request) {
 		rows, err := db.Query(`
 					SELECT id, tenant_id, name, enabled, metric_type, condition_type, threshold,
 						window_seconds, notification_channel, notification_target, notifyhub_template_id, message_template,
-						ses_region, tile_id, alert_type, last_triggered_at, created_at, updated_at
+						ses_region, tile_id, alert_type, cooldown_seconds, last_triggered_at, created_at, updated_at
 					FROM alert_rules WHERE tenant_id = $1 ORDER BY id ASC`, tenantID)
 		if err != nil {
 			log.Printf("ERROR: query alert_rules: %v", err)
@@ -3612,7 +4115,7 @@ func alertsRulesHandler(w http.ResponseWriter, r *http.Request) {
 			if err := rows.Scan(&rule.ID, &rule.TenantID, &rule.Name, &rule.Enabled,
 				&rule.MetricType, &rule.ConditionType, &rule.Threshold,
 				&rule.WindowSeconds, &rule.NotificationChannel, &rule.NotificationTarget,
-				&rule.NotifyHubTemplateID, &rule.MessageTemplate, &rule.SESRegion, &rule.TileID, &rule.AlertType, &rule.LastTriggeredAt, &rule.CreatedAt, &rule.UpdatedAt); err != nil {
+				&rule.NotifyHubTemplateID, &rule.MessageTemplate, &rule.SESRegion, &rule.TileID, &rule.AlertType, &rule.CooldownSeconds, &rule.LastTriggeredAt, &rule.CreatedAt, &rule.UpdatedAt); err != nil {
 				log.Printf("ERROR: scan alert_rule: %v", err)
 				writeJSONError(w, fmt.Sprintf("scan alert rule: %v", err), http.StatusInternalServerError)
 				return
@@ -3650,17 +4153,17 @@ func alertsRulesHandler(w http.ResponseWriter, r *http.Request) {
 
 		err := db.QueryRow(`
 					INSERT INTO alert_rules (tenant_id, name, enabled, metric_type, condition_type, threshold,
-						window_seconds, notification_channel, notification_target, notifyhub_template_id, message_template, ses_region, tile_id, alert_type)
-					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+						window_seconds, notification_channel, notification_target, notifyhub_template_id, message_template, ses_region, tile_id, alert_type, cooldown_seconds)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 					RETURNING id, tenant_id, name, enabled, metric_type, condition_type, threshold,
 						window_seconds, notification_channel, notification_target, notifyhub_template_id, message_template,
-						ses_region, tile_id, alert_type, last_triggered_at, created_at, updated_at`,
+						ses_region, tile_id, alert_type, cooldown_seconds, last_triggered_at, created_at, updated_at`,
 			tenantID, rule.Name, rule.Enabled, rule.MetricType, rule.ConditionType, rule.Threshold,
-			rule.WindowSeconds, rule.NotificationChannel, rule.NotificationTarget, rule.NotifyHubTemplateID, rule.MessageTemplate, rule.SESRegion, rule.TileID, rule.AlertType).
+			rule.WindowSeconds, rule.NotificationChannel, rule.NotificationTarget, rule.NotifyHubTemplateID, rule.MessageTemplate, rule.SESRegion, rule.TileID, rule.AlertType, rule.CooldownSeconds).
 			Scan(&rule.ID, &rule.TenantID, &rule.Name, &rule.Enabled,
 				&rule.MetricType, &rule.ConditionType, &rule.Threshold,
 				&rule.WindowSeconds, &rule.NotificationChannel, &rule.NotificationTarget,
-				&rule.NotifyHubTemplateID, &rule.MessageTemplate, &rule.SESRegion, &rule.TileID, &rule.AlertType, &rule.LastTriggeredAt, &rule.CreatedAt, &rule.UpdatedAt)
+				&rule.NotifyHubTemplateID, &rule.MessageTemplate, &rule.SESRegion, &rule.TileID, &rule.AlertType, &rule.CooldownSeconds, &rule.LastTriggeredAt, &rule.CreatedAt, &rule.UpdatedAt)
 		if err != nil {
 			log.Printf("ERROR: create alert_rule: %v", err)
 			writeJSONError(w, fmt.Sprintf("create alert rule: %v", err), http.StatusInternalServerError)
@@ -3690,11 +4193,11 @@ func alertsRulesHandler(w http.ResponseWriter, r *http.Request) {
 					UPDATE alert_rules SET
 						name=$1, enabled=$2, metric_type=$3, condition_type=$4, threshold=$5,
 						window_seconds=$6, notification_channel=$7, notification_target=$8,
-						notifyhub_template_id=$9, message_template=$10, ses_region=$11, tile_id=$12, alert_type=$13, updated_at=NOW()
-					WHERE id=$14`,
+						notifyhub_template_id=$9, message_template=$10, ses_region=$11, tile_id=$12, alert_type=$13, cooldown_seconds=$14, updated_at=NOW()
+					WHERE id=$15`,
 			rule.Name, rule.Enabled, rule.MetricType, rule.ConditionType, rule.Threshold,
 			rule.WindowSeconds, rule.NotificationChannel, rule.NotificationTarget,
-			rule.NotifyHubTemplateID, rule.MessageTemplate, rule.SESRegion, rule.TileID, rule.AlertType, id)
+			rule.NotifyHubTemplateID, rule.MessageTemplate, rule.SESRegion, rule.TileID, rule.AlertType, rule.CooldownSeconds, id)
 		if err != nil {
 			log.Printf("ERROR: update alert_rule %d: %v", id, err)
 			writeJSONError(w, fmt.Sprintf("update alert rule: %v", err), http.StatusInternalServerError)
@@ -3752,7 +4255,7 @@ func codefacPipelinesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		rows, err := db.Query(`
 			SELECT id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
-				payload_template, enabled, last_triggered_at, created_at, updated_at
+				payload_template, cooldown_seconds, enabled, last_triggered_at, created_at, updated_at
 							FROM codefac_pipelines WHERE tenant_id = $1 ORDER BY id ASC`, tenantID)
 		if err != nil {
 			log.Printf("ERROR: list codefac_pipelines: %v", err)
@@ -3765,7 +4268,7 @@ func codefacPipelinesHandler(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var p CodefacPipeline
 			if err := rows.Scan(&p.ID, &p.TenantID, &p.Name, &p.PipelineName, &p.MetricType,
-				&p.ConditionType, &p.Threshold, &p.PayloadTemplate,
+				&p.ConditionType, &p.Threshold, &p.PayloadTemplate, &p.CooldownSeconds,
 				&p.Enabled, &p.LastTriggeredAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
 				log.Printf("ERROR: scan codefac_pipeline: %v", err)
 				writeJSONError(w, fmt.Sprintf("scan: %v", err), http.StatusInternalServerError)
@@ -3801,14 +4304,14 @@ func codefacPipelinesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		err := db.QueryRow(`
 					INSERT INTO codefac_pipelines (tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
-						payload_template, enabled)
-					VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+						payload_template, cooldown_seconds, enabled)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 					RETURNING id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
-						payload_template, enabled, last_triggered_at, created_at, updated_at`,
+						payload_template, cooldown_seconds, enabled, last_triggered_at, created_at, updated_at`,
 			tenantID, p.Name, p.PipelineName, p.MetricType, p.ConditionType, p.Threshold,
-			p.PayloadTemplate, p.Enabled).
+			p.PayloadTemplate, p.CooldownSeconds, p.Enabled).
 			Scan(&p.ID, &p.TenantID, &p.Name, &p.PipelineName, &p.MetricType, &p.ConditionType,
-				&p.Threshold, &p.PayloadTemplate, &p.Enabled, &p.LastTriggeredAt, &p.CreatedAt, &p.UpdatedAt)
+				&p.Threshold, &p.PayloadTemplate, &p.CooldownSeconds, &p.Enabled, &p.LastTriggeredAt, &p.CreatedAt, &p.UpdatedAt)
 		if err != nil {
 			log.Printf("ERROR: create codefac_pipeline: %v", err)
 			writeJSONError(w, fmt.Sprintf("create: %v", err), http.StatusInternalServerError)
@@ -3839,14 +4342,14 @@ func codefacPipelinesHandler(w http.ResponseWriter, r *http.Request) {
 		err := db.QueryRow(`
 					UPDATE codefac_pipelines SET
 						name=$1, pipeline_name=$2, metric_type=$3, condition_type=$4, threshold=$5,
-						payload_template=$6, enabled=$7, updated_at=NOW()
-					WHERE id=$8
+						payload_template=$6, cooldown_seconds=$7, enabled=$8, updated_at=NOW()
+					WHERE id=$9
 			RETURNING id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
-							payload_template, enabled, last_triggered_at, created_at, updated_at`,
+							payload_template, cooldown_seconds, enabled, last_triggered_at, created_at, updated_at`,
 			p.Name, p.PipelineName, p.MetricType, p.ConditionType, p.Threshold,
-			p.PayloadTemplate, p.Enabled, id).
+			p.PayloadTemplate, p.CooldownSeconds, p.Enabled, id).
 			Scan(&p.ID, &p.TenantID, &p.Name, &p.PipelineName, &p.MetricType, &p.ConditionType,
-				&p.Threshold, &p.PayloadTemplate, &p.Enabled, &p.LastTriggeredAt, &p.CreatedAt, &p.UpdatedAt)
+				&p.Threshold, &p.PayloadTemplate, &p.CooldownSeconds, &p.Enabled, &p.LastTriggeredAt, &p.CreatedAt, &p.UpdatedAt)
 		if err == sql.ErrNoRows {
 			writeJSONError(w, "codefac pipeline not found", http.StatusNotFound)
 			return
@@ -3924,11 +4427,11 @@ func codefacPipelineTriggerHandler(w http.ResponseWriter, r *http.Request) {
 	var pipe CodefacPipeline
 	err := db.QueryRow(`
 			SELECT id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
-				payload_template, enabled, last_triggered_at, created_at, updated_at
+				payload_template, cooldown_seconds, enabled, last_triggered_at, created_at, updated_at
 			FROM codefac_pipelines WHERE id = $1 AND tenant_id = $2`, req.PipelineID, tenantID).
 		Scan(&pipe.ID, &pipe.TenantID, &pipe.Name, &pipe.PipelineName,
 			&pipe.MetricType, &pipe.ConditionType, &pipe.Threshold,
-			&pipe.PayloadTemplate, &pipe.Enabled, &pipe.LastTriggeredAt, &pipe.CreatedAt, &pipe.UpdatedAt)
+			&pipe.PayloadTemplate, &pipe.CooldownSeconds, &pipe.Enabled, &pipe.LastTriggeredAt, &pipe.CreatedAt, &pipe.UpdatedAt)
 	if err == sql.ErrNoRows {
 		writeJSONError(w, "codefac pipeline not found", http.StatusNotFound)
 		return
@@ -3955,17 +4458,15 @@ func codefacPipelineTriggerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Render payload template with workflow data
-	payloadStr := pipe.PayloadTemplate
-	payloadStr = strings.ReplaceAll(payloadStr, "{{pipeline_name}}", pipe.Name)
-	payloadStr = strings.ReplaceAll(payloadStr, "{{domain}}", req.Domain)
-	payloadStr = strings.ReplaceAll(payloadStr, "{{tenant_id}}", fmt.Sprintf("%d", tenantID))
-	payloadStr = strings.ReplaceAll(payloadStr, "{{workflow_id}}", req.WorkflowID)
-	payloadStr = strings.ReplaceAll(payloadStr, "{{run_id}}", req.RunID)
-	payloadStr = strings.ReplaceAll(payloadStr, "{{workflow_type}}", req.WorkflowType)
-	payloadStr = strings.ReplaceAll(payloadStr, "{{tasklist}}", req.Tasklist)
-	payloadStr = strings.ReplaceAll(payloadStr, "{{status}}", req.Status)
-	payloadStr = strings.ReplaceAll(payloadStr, "{{close_time}}", req.CloseTime)
-	payloadStr = strings.ReplaceAll(payloadStr, "{{idempotency_key}}", newUUIDv4())
+	wf := RecentWorkflow{
+		WorkflowID:   req.WorkflowID,
+		RunID:        req.RunID,
+		WorkflowType: req.WorkflowType,
+		TaskList:     req.Tasklist,
+		Status:       req.Status,
+		CloseTime:    req.CloseTime,
+	}
+	payloadStr := applyCodefacWorkflowPayload(pipe.PayloadTemplate, pipe, tenant, pipe.Name, wf)
 
 	// Send via NotifyHub
 	notifyPayload := map[string]interface{}{
@@ -3979,6 +4480,7 @@ func codefacPipelineTriggerHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	notifyPayload["template_variables"] = map[string]string{
 		"pipeline_name": pipe.Name,
+		"rule_name":     pipe.Name,
 		"workflow_id":   req.WorkflowID,
 		"run_id":        req.RunID,
 		"workflow_type": req.WorkflowType,
@@ -4079,17 +4581,17 @@ func alertsRulesTestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Load the alert rule
+	// Load the alert rule (include message_template and ses_region)
 	var rule AlertRule
 	err = db.QueryRow(`
 		SELECT id, tenant_id, name, enabled, metric_type, condition_type, threshold,
-			window_seconds, notification_channel, notification_target, notifyhub_template_id, tile_id,
-			alert_type, last_triggered_at, created_at, updated_at
+			window_seconds, notification_channel, notification_target, notifyhub_template_id, message_template,
+			ses_region, tile_id, alert_type, last_triggered_at, created_at, updated_at
 		FROM alert_rules WHERE id = $1 AND tenant_id = $2`, req.RuleID, tenantID).
 		Scan(&rule.ID, &rule.TenantID, &rule.Name, &rule.Enabled,
 			&rule.MetricType, &rule.ConditionType, &rule.Threshold,
 			&rule.WindowSeconds, &rule.NotificationChannel, &rule.NotificationTarget,
-			&rule.NotifyHubTemplateID, &rule.TileID, &rule.AlertType, &rule.LastTriggeredAt, &rule.CreatedAt, &rule.UpdatedAt)
+			&rule.NotifyHubTemplateID, &rule.MessageTemplate, &rule.SESRegion, &rule.TileID, &rule.AlertType, &rule.LastTriggeredAt, &rule.CreatedAt, &rule.UpdatedAt)
 	if err == sql.ErrNoRows {
 		writeJSONError(w, "alert rule not found", http.StatusNotFound)
 		return
@@ -4100,9 +4602,12 @@ func alertsRulesTestHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get current metric value from dashboard cache for real data
+	// Get current metric value from dashboard / SES caches for real data
 	currentValue := ""
 	metricInfo := ""
+	recentFailedDetails := ""
+
+	// Check dashboard cache
 	if val, ok := dashboardCache.Load(tenantID); ok {
 		entry := val.(*dashboardCacheEntry)
 		entry.mu.RLock()
@@ -4131,21 +4636,159 @@ func alertsRulesTestHandler(w http.ResponseWriter, r *http.Request) {
 					currentValue = "0 ms"
 				}
 				metricInfo = fmt.Sprintf("Current P100 latency: %s (threshold: %s %.2f)", currentValue, rule.ConditionType, rule.Threshold)
-			case "workflow_failure":
+			case "workflow_failure", "forward_workflow":
 				currentValue = fmt.Sprintf("%d", d.TotalFailed)
-				metricInfo = fmt.Sprintf("Current workflow failures: %s (threshold: %s %.2f)", currentValue, rule.ConditionType, rule.Threshold)
+				metricInfo = fmt.Sprintf("Total failures in period: %s", currentValue)
+				if len(d.RecentFailed) > 0 {
+					var lines []string
+					lines = append(lines, fmt.Sprintf("Recent failures (%d):", len(d.RecentFailed)))
+					for i, wf := range d.RecentFailed {
+						lines = append(lines, fmt.Sprintf("  %d. Workflow: %s | Run: %s | Type: %s | Status: %s",
+							i+1, wf.WorkflowID, wf.RunID, wf.WorkflowType, wf.Status))
+						if len(lines) > 15 {
+							break
+						}
+					}
+					recentFailedDetails = strings.Join(lines, "\n")
+				}
 			}
 		}
 		entry.mu.RUnlock()
 	}
 
-	// Build the notification payload
+	// Check SES cache for SES-related metric types
+	sesMetricInfo := ""
+	if strings.HasPrefix(rule.MetricType, "ses_") {
+		region := rule.SESRegion
+		if region == "" {
+			region = getEnv("AWS_REGION", "us-east-1")
+		}
+		if val, ok := sesCache.Load(region); ok {
+			sentry := val.(*sesCacheEntry)
+			sentry.mu.RLock()
+			if sentry.Data != nil {
+				sdata := sentry.Data
+				switch rule.MetricType {
+				case "ses_bounce_rate":
+					currentValue = sdata.BounceRate
+					sesMetricInfo = fmt.Sprintf("Region: %s | Bounce Rate: %s | Threshold: %s %.2f", region, currentValue, rule.ConditionType, rule.Threshold)
+				case "ses_complaint_rate":
+					currentValue = sdata.ComplaintRate
+					sesMetricInfo = fmt.Sprintf("Region: %s | Complaint Rate: %s | Threshold: %s %.2f", region, currentValue, rule.ConditionType, rule.Threshold)
+				case "ses_error_rate":
+					currentValue = sdata.ErrorRate
+					sesMetricInfo = fmt.Sprintf("Region: %s | Error Rate: %s | Threshold: %s %.2f", region, currentValue, rule.ConditionType, rule.Threshold)
+				case "ses_send_volume":
+					currentValue = fmt.Sprintf("%d", sdata.Sends)
+					sesMetricInfo = fmt.Sprintf("Region: %s | Send Volume: %s | Threshold: %s %.2f", region, currentValue, rule.ConditionType, rule.Threshold)
+				case "ses_bounce_count":
+					currentValue = fmt.Sprintf("%d", sdata.Bounces)
+					sesMetricInfo = fmt.Sprintf("Region: %s | Bounce Count: %s | Threshold: %s %.2f", region, currentValue, rule.ConditionType, rule.Threshold)
+				case "ses_complaint_count":
+					currentValue = fmt.Sprintf("%d", sdata.Complaints)
+					sesMetricInfo = fmt.Sprintf("Region: %s | Complaint Count: %s | Threshold: %s %.2f", region, currentValue, rule.ConditionType, rule.Threshold)
+				default:
+					sesMetricInfo = fmt.Sprintf("Region: %s | Sends: %d | Bounces: %d | Complaints: %d | Rejects: %d",
+						region, sdata.Sends, sdata.Bounces, sdata.Complaints, sdata.Rejects)
+					currentValue = fmt.Sprintf("%d", sdata.Sends)
+				}
+			}
+			sentry.mu.RUnlock()
+		}
+		if sesMetricInfo == "" {
+			sesMetricInfo = fmt.Sprintf("No SES data available for region: %s", region)
+		}
+	}
+
+	// Build the notification payload with real data
 	testMsg := req.TestMessage
-	if testMsg == "" && metricInfo != "" {
-		testMsg = fmt.Sprintf("Alert: %s\nMetric: %s\n%s\nWindow: %ds\nStatus: TRIGGERED",
-			rule.Name, rule.MetricType, metricInfo, rule.WindowSeconds)
-	} else if testMsg == "" {
-		testMsg = "This is a test notification from the SLO Dashboard alerts system."
+	if testMsg == "" {
+		// Use message_template from the rule if available
+		if rule.MessageTemplate != "" {
+			testMsg = rule.MessageTemplate
+			testMsg = strings.ReplaceAll(testMsg, "{{rule_name}}", rule.Name)
+			testMsg = strings.ReplaceAll(testMsg, "{{alert_name}}", rule.Name)
+			testMsg = strings.ReplaceAll(testMsg, "{{metric_type}}", rule.MetricType)
+			testMsg = strings.ReplaceAll(testMsg, "{{metric_label}}", rule.MetricType)
+			testMsg = strings.ReplaceAll(testMsg, "{{metric_value}}", currentValue)
+			testMsg = strings.ReplaceAll(testMsg, "{{condition_type}}", rule.ConditionType)
+			testMsg = strings.ReplaceAll(testMsg, "{{threshold}}", fmt.Sprintf("%.2f", rule.Threshold))
+			testMsg = strings.ReplaceAll(testMsg, "{{tenant_id}}", fmt.Sprintf("%d", tenantID))
+			// If we have recent failure data, populate workflow-level template variables with the first failure
+			if val, ok := dashboardCache.Load(tenantID); ok {
+				entry := val.(*dashboardCacheEntry)
+				entry.mu.RLock()
+				if entry.Data != nil && len(entry.Data.RecentFailed) > 0 {
+					wf := entry.Data.RecentFailed[0]
+					testMsg = strings.ReplaceAll(testMsg, "{{workflow_id}}", wf.WorkflowID)
+					testMsg = strings.ReplaceAll(testMsg, "{{run_id}}", wf.RunID)
+					testMsg = strings.ReplaceAll(testMsg, "{{workflow_type}}", wf.WorkflowType)
+					testMsg = strings.ReplaceAll(testMsg, "{{workflow-type}}", wf.WorkflowType)
+					testMsg = strings.ReplaceAll(testMsg, "{{tasklist}}", wf.TaskList)
+					testMsg = strings.ReplaceAll(testMsg, "{{status}}", wf.Status)
+					testMsg = strings.ReplaceAll(testMsg, "{{close_time}}", wf.CloseTime)
+				}
+				entry.mu.RUnlock()
+			}
+
+			// Add {{dashboard_info}} from cached dashboard data
+			if val, ok := dashboardCache.Load(tenantID); ok {
+				entry := val.(*dashboardCacheEntry)
+				entry.mu.RLock()
+				if entry.Data != nil {
+					d := entry.Data
+					var lines []string
+					lines = append(lines, fmt.Sprintf("Domain: %s", d.DomainName))
+					lines = append(lines, fmt.Sprintf("Period (30min): Success= %s | Failure= %s | Volume= %d", d.Rates30min.SuccessPct, d.Rates30min.FailurePct, d.Rates30min.Total))
+					lines = append(lines, fmt.Sprintf("Period (1hr):   Success= %s | Failure= %s | Volume= %d", d.Rates1hr.SuccessPct, d.Rates1hr.FailurePct, d.Rates1hr.Total))
+					lines = append(lines, fmt.Sprintf("Period (1d):    Success= %s | Failure= %s | Volume= %d", d.Rates1d.SuccessPct, d.Rates1d.FailurePct, d.Rates1d.Total))
+					lines = append(lines, fmt.Sprintf("Period (7d):    Success= %s | Failure= %s | Volume= %d", d.Rates7d.SuccessPct, d.Rates7d.FailurePct, d.Rates7d.Total))
+					lines = append(lines, fmt.Sprintf("Period (30d):   Success= %s | Failure= %s | Volume= %d", d.Rates30d.SuccessPct, d.Rates30d.FailurePct, d.Rates30d.Total))
+					testMsg = strings.ReplaceAll(testMsg, "{{dashboard_info}}", strings.Join(lines, "\n"))
+				}
+				entry.mu.RUnlock()
+			}
+			testMsg = strings.ReplaceAll(testMsg, "{{dashboard_info}}", "")
+
+			// Add SES template variables if applicable
+			testMsg = strings.ReplaceAll(testMsg, "{{ses_region}}", rule.SESRegion)
+			if strings.HasPrefix(rule.MetricType, "ses_") {
+				region := rule.SESRegion
+				if region == "" {
+					region = getEnv("AWS_REGION", "us-east-1")
+				}
+				testMsg = strings.ReplaceAll(testMsg, "{{ses_region}}", region)
+				if val, ok := sesCache.Load(region); ok {
+					sentry := val.(*sesCacheEntry)
+					sentry.mu.RLock()
+					sdata := sentry.Data
+					sentry.mu.RUnlock()
+					if sdata != nil {
+						testMsg = strings.ReplaceAll(testMsg, "{{total_sends}}", fmt.Sprintf("%d", sdata.Sends))
+						testMsg = strings.ReplaceAll(testMsg, "{{bounces}}", fmt.Sprintf("%d", sdata.Bounces))
+						testMsg = strings.ReplaceAll(testMsg, "{{complaints}}", fmt.Sprintf("%d", sdata.Complaints))
+						testMsg = strings.ReplaceAll(testMsg, "{{rejects}}", fmt.Sprintf("%d", sdata.Rejects))
+						testMsg = strings.ReplaceAll(testMsg, "{{bounce_rate}}", sdata.BounceRate)
+						testMsg = strings.ReplaceAll(testMsg, "{{complaint_rate}}", sdata.ComplaintRate)
+						testMsg = strings.ReplaceAll(testMsg, "{{error_rate}}", sdata.ErrorRate)
+						testMsg = strings.ReplaceAll(testMsg, "{{permanent_bounces}}", fmt.Sprintf("%d", sdata.PermanentBounces))
+						testMsg = strings.ReplaceAll(testMsg, "{{transient_bounces}}", fmt.Sprintf("%d", sdata.TransientBounces))
+					}
+				}
+			}
+		} else if sesMetricInfo != "" {
+			testMsg = fmt.Sprintf("Alert: %s\nMetric: %s\n%s\nWindow: %ds\nStatus: TRIGGERED",
+				rule.Name, rule.MetricType, sesMetricInfo, rule.WindowSeconds)
+		} else if metricInfo != "" {
+			testMsg = fmt.Sprintf("Alert: %s\nMetric: %s\n%s\nWindow: %ds\nStatus: TRIGGERED",
+				rule.Name, rule.MetricType, metricInfo, rule.WindowSeconds)
+			if recentFailedDetails != "" {
+				testMsg += "\n\n" + recentFailedDetails
+			}
+		} else {
+			testMsg = fmt.Sprintf("Alert: %s\nMetric: %s\nCurrent value: %s\nThreshold: %s %.2f\nWindow: %ds\nStatus: TRIGGERED (test)",
+				rule.Name, rule.MetricType, currentValue, rule.ConditionType, rule.Threshold, rule.WindowSeconds)
+		}
 	}
 
 	notifyPayload := map[string]interface{}{
@@ -4480,6 +5123,48 @@ func reportsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// extractP100TopN sorts P100 entries by latency descending and returns the top N.
+func extractP100TopN(entries []P100ByWorkflowEntry, topN int) []P100ByWorkflowEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	sorted := make([]P100ByWorkflowEntry, len(entries))
+	copy(sorted, entries)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].P100LatencyMs > sorted[j].P100LatencyMs
+	})
+	if len(sorted) > topN {
+		sorted = sorted[:topN]
+	}
+	return sorted
+}
+
+// formatP100Report builds a formatted string of top P100 entries for report output.
+func formatP100Report(sorted []P100ByWorkflowEntry, topN int) string {
+	if len(sorted) == 0 {
+		return ""
+	}
+	var lines []string
+	lines = append(lines, fmt.Sprintf("*Top %d Workflows by P100 Latency:*", topN))
+	lines = append(lines, "```")
+	lines = append(lines, fmt.Sprintf("%-3s %-40s %-10s %s", "#", "Workflow Type", "Count", "P100 Latency"))
+	for i, entry := range sorted {
+		latency := "-"
+		if entry.P100LatencyMs > 0 {
+			if entry.P100LatencyMs < 1000 {
+				latency = fmt.Sprintf("%d ms", entry.P100LatencyMs)
+			} else if entry.P100LatencyMs < 60000 {
+				latency = fmt.Sprintf("%.1f s", float64(entry.P100LatencyMs)/1000)
+			} else {
+				latency = fmt.Sprintf("%dm %ds", entry.P100LatencyMs/60000, (entry.P100LatencyMs%60000)/1000)
+			}
+		}
+		lines = append(lines, fmt.Sprintf("%-3d %-40s %-10d %s", i+1, entry.WorkflowType, entry.Count, latency))
+	}
+	lines = append(lines, "```")
+	return strings.Join(lines, "\n")
+}
+
 // reportTriggerHandler handles POST /api/reports/trigger.
 // It immediately generates and sends a report via NotifyHub.
 func reportTriggerHandler(w http.ResponseWriter, r *http.Request) {
@@ -4534,30 +5219,83 @@ func reportTriggerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try to get cached dashboard data for context
+	// Helper to build dashboard info and SLO metrics from an APIResponse
+	buildReportMetrics := func(d *APIResponse) (string, string, string, string, string, string, string) {
+		var lines []string
+		lines = append(lines, fmt.Sprintf("Domain: %s", d.DomainName))
+		lines = append(lines, fmt.Sprintf("Period (30min): Success= %s | Failure= %s | Volume= %d", d.Rates30min.SuccessPct, d.Rates30min.FailurePct, d.Rates30min.Total))
+		lines = append(lines, fmt.Sprintf("Period (1hr):   Success= %s | Failure= %s | Volume= %d", d.Rates1hr.SuccessPct, d.Rates1hr.FailurePct, d.Rates1hr.Total))
+		lines = append(lines, fmt.Sprintf("Period (1d):    Success= %s | Failure= %s | Volume= %d", d.Rates1d.SuccessPct, d.Rates1d.FailurePct, d.Rates1d.Total))
+		lines = append(lines, fmt.Sprintf("Period (7d):    Success= %s | Failure= %s | Volume= %d", d.Rates7d.SuccessPct, d.Rates7d.FailurePct, d.Rates7d.Total))
+		lines = append(lines, fmt.Sprintf("Period (30d):   Success= %s | Failure= %s | Volume= %d", d.Rates30d.SuccessPct, d.Rates30d.FailurePct, d.Rates30d.Total))
+		if d.TotalFailed > 0 {
+			lines = append(lines, fmt.Sprintf("Recent Failures: %d", d.TotalFailed))
+		}
+		if len(d.TasklistLatency) > 0 {
+			lines = append(lines, fmt.Sprintf("Tasklists Tracked: %d", len(d.TasklistLatency)))
+		}
+		dashInfo := strings.Join(lines, "\n")
+		s24h := fmt.Sprintf("%d", d.Rates1d.Success)
+		f24h := fmt.Sprintf("%d", d.Rates1d.Failure)
+		tv24h := fmt.Sprintf("%d", d.Rates1d.Total)
+		sr24h := d.Rates1d.SuccessPct
+		fr24h := d.Rates1d.FailurePct
+		p100Str := "-"
+		if len(d.Windows) > 6 {
+			p100Ms := d.Windows[6].P100LatencyMs
+			if p100Ms > 0 {
+				if p100Ms < 1000 {
+					p100Str = fmt.Sprintf("%d ms", p100Ms)
+				} else if p100Ms < 60000 {
+					p100Str = fmt.Sprintf("%.1f s", float64(p100Ms)/1000)
+				} else {
+					p100Str = fmt.Sprintf("%dm %ds", p100Ms/60000, (p100Ms%60000)/1000)
+				}
+			}
+		}
+		return dashInfo, s24h, f24h, tv24h, p100Str, sr24h, fr24h
+	}
+
+	// Try to get cached dashboard data
 	dashboardInfo := ""
+	successful24h := "0"
+	failures24h := "0"
+	totalVolume24h := "0"
+	p100Latency24h := "-"
+	successRate24h := "N/A"
+	failureRate24h := "N/A"
+	cachedReportData := false
+
 	if val, ok := dashboardCache.Load(report.TenantID); ok {
 		entry := val.(*dashboardCacheEntry)
 		entry.mu.RLock()
 		if entry.Data != nil {
-			d := entry.Data
-			windowCount := 0
-			if len(d.Windows) > 0 {
-				windowCount = len(d.Windows)
-			}
-			dashboardInfo = fmt.Sprintf("Windows: %d | Success rate: %s | Failure rate: %s | Volume: %d",
-				windowCount, d.Rates1d.SuccessPct, d.Rates1d.FailurePct, d.Rates1d.Total)
+			cachedReportData = true
+			dashboardInfo, successful24h, failures24h, totalVolume24h, p100Latency24h, successRate24h, failureRate24h = buildReportMetrics(entry.Data)
 		}
 		entry.mu.RUnlock()
+	}
+
+	// Fallback: if cache has no data, query ES directly to get current dashboard data
+	if !cachedReportData {
+		log.Printf("WARN: report %d: no cached data for tenant %d, querying ES directly", id, report.TenantID)
+		cfg := tenantESConfig(tenant)
+		if msResp, err := queryElasticsearch(cfg, 20, 86400, []int{1, 5}, []string{}, 0, 0, 0, "WorkflowType", []int{}, ""); err == nil {
+			if apiResp, _ := buildResponse(cfg, report.TenantID, msResp, 20, []int{1, 5}, "WorkflowType", "", 86400); apiResp.DomainName != "" {
+				dashboardInfo, successful24h, failures24h, totalVolume24h, p100Latency24h, successRate24h, failureRate24h = buildReportMetrics(&apiResp)
+			}
+		} else {
+			log.Printf("ERROR: report %d: ES fallback query failed: %v", id, err)
+		}
 	}
 
 	// Build report body
 	now := time.Now().Format("2006-01-02 15:04:05")
 	subject := fmt.Sprintf("[REPORT] %s - %s", report.Name, report.ReportType)
 
-	// Gather SES metrics for SES Delivery Reports
+	// Gather SES metrics (populated for all report types — template can choose to use {{ses_info}} or not)
 	sesInfo := ""
-	if report.ReportType == "ses_delivery_report" {
+	{
 		regions := report.Regions
 		if len(regions) == 0 {
 			regions = getSESRegions()
@@ -4578,61 +5316,46 @@ func reportTriggerHandler(w http.ResponseWriter, r *http.Request) {
 				entry.mu.RUnlock()
 			}
 		}
-		bounceRate := 0.0
-		complaintRate := 0.0
-		errorRate := 0.0
-		if totalSends > 0 {
-			bounceRate = float64(totalBounces) / float64(totalSends) * 100
-			complaintRate = float64(totalComplaints) / float64(totalSends) * 100
-			errorRate = float64(totalBounces+totalComplaints+totalRejects) / float64(totalSends) * 100
+		if len(activeRegions) > 0 && totalSends > 0 {
+			bounceRate := float64(totalBounces) / float64(totalSends) * 100
+			complaintRate := float64(totalComplaints) / float64(totalSends) * 100
+			errorRate := float64(totalBounces+totalComplaints+totalRejects) / float64(totalSends) * 100
+			sesInfo = fmt.Sprintf("SES Regions: %s\nTotal Sends: %d\nBounces: %d (%.2f%%)\nComplaints: %d (%.2f%%)\nRejects: %d\nError Rate: %.2f%%",
+				strings.Join(activeRegions, ", "), totalSends, totalBounces, bounceRate,
+				totalComplaints, complaintRate, totalRejects, errorRate)
 		}
-		sesInfo = fmt.Sprintf("SES Regions: %s\nTotal Sends: %d\nBounces: %d (%.2f%%)\nComplaints: %d (%.2f%%)\nRejects: %d\nError Rate: %.2f%%",
-			strings.Join(activeRegions, ", "), totalSends, totalBounces, bounceRate,
-			totalComplaints, complaintRate, totalRejects, errorRate)
 	}
 
-	// Gather P100 latency data for P100 Latency Report
+	// Gather P100 latency data (populated for all report types — template can choose to use {{p100_info}} or not)
 	p100Info := ""
-	if report.ReportType == "p100_latency_report" {
+	{
 		topN := report.WorkflowTopN
 		if topN <= 0 {
 			topN = 10
 		}
+		p100DataAvailable := false
 		if val, ok := dashboardCache.Load(report.TenantID); ok {
 			entry := val.(*dashboardCacheEntry)
 			entry.mu.RLock()
 			if entry.Data != nil && len(entry.Data.P100ByWorkflow) > 0 {
-				d := entry.Data
-				// Sort by P100 latency descending
-				sorted := make([]P100ByWorkflowEntry, len(d.P100ByWorkflow))
-				copy(sorted, d.P100ByWorkflow)
-				sort.Slice(sorted, func(i, j int) bool {
-					return sorted[i].P100LatencyMs > sorted[j].P100LatencyMs
-				})
-				if len(sorted) > topN {
-					sorted = sorted[:topN]
-				}
-				var lines []string
-				lines = append(lines, fmt.Sprintf("*Top %d Workflows by P100 Latency:*", topN))
-				lines = append(lines, "```")
-				lines = append(lines, fmt.Sprintf("%-3s %-40s %-10s %s", "#", "Workflow Type", "Count", "P100 Latency"))
-				for i, entry := range sorted {
-					latency := "-"
-					if entry.P100LatencyMs > 0 {
-						if entry.P100LatencyMs < 1000 {
-							latency = fmt.Sprintf("%d ms", entry.P100LatencyMs)
-						} else if entry.P100LatencyMs < 60000 {
-							latency = fmt.Sprintf("%.1f s", float64(entry.P100LatencyMs)/1000)
-						} else {
-							latency = fmt.Sprintf("%dm %ds", entry.P100LatencyMs/60000, (entry.P100LatencyMs%60000)/1000)
-						}
-					}
-					lines = append(lines, fmt.Sprintf("%-3d %-40s %-10d %s", i+1, entry.WorkflowType, entry.Count, latency))
-				}
-				lines = append(lines, "```")
-				p100Info = strings.Join(lines, "\n")
+				p100DataAvailable = true
+				sorted := extractP100TopN(entry.Data.P100ByWorkflow, topN)
+				p100Info = formatP100Report(sorted, topN)
 			}
 			entry.mu.RUnlock()
+		}
+		// Fallback: query ES directly if cache has no P100 data
+		if !p100DataAvailable {
+			log.Printf("WARN: report %d: no cached P100 data for tenant %d, querying ES directly", id, report.TenantID)
+			cfg := tenantESConfig(tenant)
+			if msResp, err := queryElasticsearch(cfg, 20, 86400, []int{1, 5}, []string{}, 0, 0, 0, "WorkflowType", []int{}, ""); err == nil {
+				if apiResp, _ := buildResponse(cfg, report.TenantID, msResp, 20, []int{1, 5}, "WorkflowType", "", 86400); apiResp.DomainName != "" && len(apiResp.P100ByWorkflow) > 0 {
+					sorted := extractP100TopN(apiResp.P100ByWorkflow, topN)
+					p100Info = formatP100Report(sorted, topN)
+				}
+			} else {
+				log.Printf("ERROR: report %d: P100 ES fallback query failed: %v", id, err)
+			}
 		}
 		if p100Info == "" {
 			p100Info = fmt.Sprintf("No P100 latency data available for top %d workflows.", topN)
@@ -4654,6 +5377,13 @@ func reportTriggerHandler(w http.ResponseWriter, r *http.Request) {
 		body = strings.ReplaceAll(body, "{{p100_info}}", p100Info)
 		body = strings.ReplaceAll(body, "{{workflow_top_n}}", fmt.Sprintf("%d", report.WorkflowTopN))
 		body = strings.ReplaceAll(body, "{{client_name}}", report.ClientName)
+		// Individual SLO metric substitutions
+		body = strings.ReplaceAll(body, "{{successful_24h}}", successful24h)
+		body = strings.ReplaceAll(body, "{{failures_24h}}", failures24h)
+		body = strings.ReplaceAll(body, "{{total_volume_24h}}", totalVolume24h)
+		body = strings.ReplaceAll(body, "{{p100_latency_24h}}", p100Latency24h)
+		body = strings.ReplaceAll(body, "{{success_rate_24h}}", successRate24h)
+		body = strings.ReplaceAll(body, "{{failure_rate_24h}}", failureRate24h)
 	} else {
 		if report.ReportType == "ses_delivery_report" && sesInfo != "" {
 			body = fmt.Sprintf("Report: %s\nType: %s\nGenerated: %s\n\n%s\n\n%s",
@@ -4828,20 +5558,14 @@ func startDashboardRefresher(ctx context.Context) {
 				continue
 			}
 			for _, t := range tenants {
-				cfg := Config{
-					ES:         t.ESEndpoint,
-					Index:      t.ESIndex,
-					DomainID:   t.DomainID,
-					DomainName: t.DomainName,
-					ESApiKey:   t.ESApiKey,
-				}
+				cfg := tenantESConfig(&t)
 				msResp, err := queryElasticsearch(cfg, 20, 3600, []int{1, 5},
 					[]string{}, 0, 0, 0, "WorkflowType", []int{}, "")
 				if err != nil {
 					log.Printf("ERROR: dashboard refresh tenant %d: %v", t.ID, err)
 					continue
 				}
-				apiResp, totalFailed := buildResponse(cfg, t.ID, msResp, 20, []int{1, 5}, "WorkflowType", "")
+				apiResp, totalFailed := buildResponse(cfg, t.ID, msResp, 20, []int{1, 5}, "WorkflowType", "", 3600)
 
 				entry := &dashboardCacheEntry{}
 				entry.mu.Lock()
@@ -4916,7 +5640,7 @@ func startAlertEvaluator(ctx context.Context) {
 				rows, err := db.Query(`
                     SELECT id, tenant_id, name, enabled, metric_type, condition_type, threshold,
                         window_seconds, notification_channel, notification_target, notifyhub_template_id,
-                        ses_region, tile_id, alert_type, last_triggered_at
+                        ses_region, tile_id, alert_type, cooldown_seconds, last_triggered_at
                     FROM alert_rules WHERE tenant_id = $1 AND enabled = true`, t.ID)
 				if err != nil {
 					log.Printf("ERROR: alert eval: query rules tenant %d: %v", t.ID, err)
@@ -4929,7 +5653,7 @@ func startAlertEvaluator(ctx context.Context) {
 					if err := rows.Scan(&r.ID, &r.TenantID, &r.Name, &r.Enabled,
 						&r.MetricType, &r.ConditionType, &r.Threshold,
 						&r.WindowSeconds, &r.NotificationChannel, &r.NotificationTarget,
-						&r.NotifyHubTemplateID, &r.SESRegion, &r.TileID, &r.AlertType, &r.LastTriggeredAt); err != nil {
+						&r.NotifyHubTemplateID, &r.SESRegion, &r.TileID, &r.AlertType, &r.CooldownSeconds, &r.LastTriggeredAt); err != nil {
 						log.Printf("ERROR: alert eval: scan rule: %v", err)
 						continue
 					}
@@ -5101,12 +5825,24 @@ func startAlertEvaluator(ctx context.Context) {
 					}
 
 					if !triggered {
+						// Condition not met — clear episode state so zero-cooldown rules can re-arm
+						if rule.CooldownSeconds <= 0 {
+							triggerKey := fmt.Sprintf("%d:%d", t.ID, rule.ID)
+							triggeredRules.Delete(triggerKey)
+						}
 						continue
 					}
 
-					// Check if this was already triggered recently (avoid re-triggering)
-					if rule.LastTriggeredAt != nil && time.Since(*rule.LastTriggeredAt) < 5*time.Minute {
+					if alertRuleInCooldown(rule.LastTriggeredAt, rule.CooldownSeconds) {
 						continue
+					}
+
+					// Zero-cooldown rules fire once per breach episode until condition clears
+					if rule.CooldownSeconds <= 0 {
+						triggerKey := fmt.Sprintf("%d:%d", t.ID, rule.ID)
+						if _, alreadyFired := triggeredRules.LoadOrStore(triggerKey, true); alreadyFired {
+							continue
+						}
 					}
 
 					// Send notification via NotifyHub
@@ -5127,6 +5863,47 @@ func startAlertEvaluator(ctx context.Context) {
 						bodyMsg = strings.ReplaceAll(bodyMsg, "{{threshold}}", fmt.Sprintf("%.2f", rule.Threshold))
 						bodyMsg = strings.ReplaceAll(bodyMsg, "{{tenant_id}}", fmt.Sprintf("%d", t.ID))
 						bodyMsg = strings.ReplaceAll(bodyMsg, "{{alert_name}}", rule.Name)
+
+						// Add {{dashboard_info}} from cached dashboard data
+						if data != nil {
+							var dashLines []string
+							dashLines = append(dashLines, fmt.Sprintf("Domain: %s", data.DomainName))
+							dashLines = append(dashLines, fmt.Sprintf("Period (30min): Success= %s | Failure= %s | Volume= %d", data.Rates30min.SuccessPct, data.Rates30min.FailurePct, data.Rates30min.Total))
+							dashLines = append(dashLines, fmt.Sprintf("Period (1hr):   Success= %s | Failure= %s | Volume= %d", data.Rates1hr.SuccessPct, data.Rates1hr.FailurePct, data.Rates1hr.Total))
+							dashLines = append(dashLines, fmt.Sprintf("Period (1d):    Success= %s | Failure= %s | Volume= %d", data.Rates1d.SuccessPct, data.Rates1d.FailurePct, data.Rates1d.Total))
+							dashLines = append(dashLines, fmt.Sprintf("Period (7d):    Success= %s | Failure= %s | Volume= %d", data.Rates7d.SuccessPct, data.Rates7d.FailurePct, data.Rates7d.Total))
+							dashLines = append(dashLines, fmt.Sprintf("Period (30d):   Success= %s | Failure= %s | Volume= %d", data.Rates30d.SuccessPct, data.Rates30d.FailurePct, data.Rates30d.Total))
+							bodyMsg = strings.ReplaceAll(bodyMsg, "{{dashboard_info}}", strings.Join(dashLines, "\n"))
+						} else {
+							bodyMsg = strings.ReplaceAll(bodyMsg, "{{dashboard_info}}", "")
+						}
+
+						// Add SES-specific template variables for SES-related rules
+						bodyMsg = strings.ReplaceAll(bodyMsg, "{{ses_region}}", rule.SESRegion)
+						if strings.HasPrefix(rule.MetricType, "ses_") {
+							region := rule.SESRegion
+							if region == "" {
+								region = getEnv("AWS_REGION", "us-east-1")
+							}
+							bodyMsg = strings.ReplaceAll(bodyMsg, "{{ses_region}}", region)
+							if cacheVal, ok := sesCache.Load(region); ok {
+								sentry := cacheVal.(*sesCacheEntry)
+								sentry.mu.RLock()
+								sdata := sentry.Data
+								sentry.mu.RUnlock()
+								if sdata != nil {
+									bodyMsg = strings.ReplaceAll(bodyMsg, "{{total_sends}}", fmt.Sprintf("%d", sdata.Sends))
+									bodyMsg = strings.ReplaceAll(bodyMsg, "{{bounces}}", fmt.Sprintf("%d", sdata.Bounces))
+									bodyMsg = strings.ReplaceAll(bodyMsg, "{{complaints}}", fmt.Sprintf("%d", sdata.Complaints))
+									bodyMsg = strings.ReplaceAll(bodyMsg, "{{rejects}}", fmt.Sprintf("%d", sdata.Rejects))
+									bodyMsg = strings.ReplaceAll(bodyMsg, "{{bounce_rate}}", sdata.BounceRate)
+									bodyMsg = strings.ReplaceAll(bodyMsg, "{{complaint_rate}}", sdata.ComplaintRate)
+									bodyMsg = strings.ReplaceAll(bodyMsg, "{{error_rate}}", sdata.ErrorRate)
+									bodyMsg = strings.ReplaceAll(bodyMsg, "{{permanent_bounces}}", fmt.Sprintf("%d", sdata.PermanentBounces))
+									bodyMsg = strings.ReplaceAll(bodyMsg, "{{transient_bounces}}", fmt.Sprintf("%d", sdata.TransientBounces))
+								}
+							}
+						}
 					}
 
 					notifyPayload := map[string]interface{}{
@@ -5209,7 +5986,7 @@ func startAlertEvaluator(ctx context.Context) {
 					if rule.NotificationChannel == "webhook" {
 						pipelineRows, err := db.Query(`
 							SELECT id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
-								payload_template, enabled, last_triggered_at
+								payload_template, cooldown_seconds, enabled, last_triggered_at
 							FROM codefac_pipelines WHERE tenant_id = $1 AND enabled = true
 							AND metric_type = $2 AND condition_type = $3`, t.ID, rule.MetricType, rule.ConditionType)
 						if err == nil {
@@ -5217,7 +5994,7 @@ func startAlertEvaluator(ctx context.Context) {
 								var pipe CodefacPipeline
 								if err := pipelineRows.Scan(&pipe.ID, &pipe.TenantID, &pipe.Name, &pipe.PipelineName,
 									&pipe.MetricType, &pipe.ConditionType, &pipe.Threshold,
-									&pipe.PayloadTemplate, &pipe.Enabled, &pipe.LastTriggeredAt); err != nil {
+									&pipe.PayloadTemplate, &pipe.CooldownSeconds, &pipe.Enabled, &pipe.LastTriggeredAt); err != nil {
 									continue
 								}
 								// Check threshold matches
@@ -5229,11 +6006,20 @@ func startAlertEvaluator(ctx context.Context) {
 									conditionMet = metricValue < pipe.Threshold
 								}
 								if !conditionMet {
+									if pipe.CooldownSeconds <= 0 {
+										pipeKey := fmt.Sprintf("%d:%d:%d", t.ID, rule.ID, pipe.ID)
+										triggeredRules.Delete(pipeKey)
+									}
 									continue
 								}
-								// Avoid re-triggering
-								if pipe.LastTriggeredAt != nil && time.Since(*pipe.LastTriggeredAt) < 5*time.Minute {
+								if alertRuleInCooldown(pipe.LastTriggeredAt, pipe.CooldownSeconds) {
 									continue
+								}
+								if pipe.CooldownSeconds <= 0 {
+									pipeKey := fmt.Sprintf("%d:%d:%d", t.ID, rule.ID, pipe.ID)
+									if _, pipeFired := triggeredRules.LoadOrStore(pipeKey, true); pipeFired {
+										continue
+									}
 								}
 
 								// Build payload from template with variable substitution
@@ -5319,7 +6105,7 @@ func startAlertEvaluator(ctx context.Context) {
 				if len(data.RecentFailed) > 0 {
 					pipeRows, err := db.Query(`
 						SELECT id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
-							payload_template, enabled, last_triggered_at
+							payload_template, cooldown_seconds, enabled, last_triggered_at
 						FROM codefac_pipelines WHERE tenant_id = $1 AND enabled = true
 						AND metric_type = 'workflow_failure'`, t.ID)
 					if err == nil {
@@ -5327,28 +6113,17 @@ func startAlertEvaluator(ctx context.Context) {
 							var pipe CodefacPipeline
 							if err := pipeRows.Scan(&pipe.ID, &pipe.TenantID, &pipe.Name, &pipe.PipelineName,
 								&pipe.MetricType, &pipe.ConditionType, &pipe.Threshold,
-								&pipe.PayloadTemplate, &pipe.Enabled, &pipe.LastTriggeredAt); err != nil {
+								&pipe.PayloadTemplate, &pipe.CooldownSeconds, &pipe.Enabled, &pipe.LastTriggeredAt); err != nil {
 								continue
 							}
-							// Avoid re-triggering
-							if pipe.LastTriggeredAt != nil && time.Since(*pipe.LastTriggeredAt) < 5*time.Minute {
-								continue
-							}
-
-							// Send each failure as a separate webhook via NotifyHub
 							for _, wf := range data.RecentFailed {
-								payloadStr := pipe.PayloadTemplate
-								payloadStr = strings.ReplaceAll(payloadStr, "{{pipeline_name}}", pipe.Name)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{domain}}", t.DomainName)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{domain_id}}", t.DomainID)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{tenant_id}}", fmt.Sprintf("%d", t.ID))
-								payloadStr = strings.ReplaceAll(payloadStr, "{{workflow_id}}", wf.WorkflowID)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{run_id}}", wf.RunID)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{workflow_type}}", wf.WorkflowType)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{tasklist}}", wf.TaskList)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{status}}", wf.Status)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{close_time}}", wf.CloseTime)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{idempotency_key}}", newUUIDv4())
+								if workflowAlertAlreadySent(pipe.ID, wf.WorkflowID, wf.RunID) {
+									continue
+								}
+								if alertRuleInCooldown(pipe.LastTriggeredAt, pipe.CooldownSeconds) {
+									continue
+								}
+								payloadStr := applyCodefacWorkflowPayload(pipe.PayloadTemplate, pipe, &t, pipe.Name, wf)
 
 								notifyPayload := map[string]interface{}{
 									"idempotency_key": newUUIDv4(),
@@ -5361,6 +6136,7 @@ func startAlertEvaluator(ctx context.Context) {
 								}
 								notifyPayload["template_variables"] = map[string]string{
 									"pipeline_name": pipe.Name,
+									"rule_name":     pipe.Name,
 									"workflow_id":   wf.WorkflowID,
 									"run_id":        wf.RunID,
 									"workflow_type": wf.WorkflowType,
@@ -5394,19 +6170,153 @@ func startAlertEvaluator(ctx context.Context) {
 
 								now := time.Now()
 								db.Exec(`
-									INSERT INTO alert_history (tenant_id, tile_id, metric_type,
+									INSERT INTO alert_history (tenant_id, alert_rule_id, tile_id, metric_type,
 										metric_value, threshold, condition_type, channel, recipient, status, error_message, sent_at, workflow_id, run_id)
-									VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-									t.ID, "recent-failures", "workflow_failure", 0, pipe.Threshold,
+									VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+									t.ID, pipe.ID, "recent-failures", "workflow_failure", 0, pipe.Threshold,
 									pipe.ConditionType, "pipeline", pipe.PipelineName, wfStatus, wfErrMsg, now, wf.WorkflowID, wf.RunID)
+
+								db.Exec(`UPDATE codefac_pipelines SET last_triggered_at = $1 WHERE id = $2`, now, pipe.ID)
+								pipe.LastTriggeredAt = &now
 
 								log.Printf("WORKFLOW FAILURE PIPELINE: tenant %d pipeline %q workflow %s/%s -> %s",
 									t.ID, pipe.Name, wf.WorkflowID, wf.RunID, wfStatus)
 							}
-							// Update last_triggered_at after processing all failures
-							db.Exec(`UPDATE codefac_pipelines SET last_triggered_at = $1 WHERE id = $2`, time.Now(), pipe.ID)
 						}
 						pipeRows.Close()
+					}
+
+					// ─── Alert Rule: Workflow Failure Evaluation ─────
+					// Evaluate alert_rules with forward type or workflow_failure metric.
+					// These rules trigger immediately on any workflow failure (no threshold/window).
+					if len(data.RecentFailed) > 0 {
+						fwdRows, err := db.Query(`
+							SELECT id, tenant_id, name, enabled, metric_type, condition_type, threshold,
+								window_seconds, notification_channel, notification_target, notifyhub_template_id, message_template,
+								ses_region, tile_id, alert_type, cooldown_seconds, last_triggered_at
+							FROM alert_rules WHERE tenant_id = $1 AND enabled = true
+							AND (alert_type = 'forward' OR metric_type IN ('workflow_failure', 'forward_workflow'))`, t.ID)
+						if err == nil {
+							for fwdRows.Next() {
+								var fwdRule AlertRule
+								if err := fwdRows.Scan(&fwdRule.ID, &fwdRule.TenantID, &fwdRule.Name, &fwdRule.Enabled,
+									&fwdRule.MetricType, &fwdRule.ConditionType, &fwdRule.Threshold,
+									&fwdRule.WindowSeconds, &fwdRule.NotificationChannel, &fwdRule.NotificationTarget,
+									&fwdRule.NotifyHubTemplateID, &fwdRule.MessageTemplate, &fwdRule.SESRegion, &fwdRule.TileID, &fwdRule.AlertType, &fwdRule.CooldownSeconds, &fwdRule.LastTriggeredAt); err != nil {
+									log.Printf("ERROR: workflow failure alert eval: scan rule: %v", err)
+									continue
+								}
+
+								for _, wf := range data.RecentFailed {
+									if workflowAlertAlreadySent(fwdRule.ID, wf.WorkflowID, wf.RunID) {
+										continue
+									}
+									if alertRuleInCooldown(fwdRule.LastTriggeredAt, fwdRule.CooldownSeconds) {
+										continue
+									}
+									bodyMsg := fmt.Sprintf("Workflow failure alert %q triggered:\nWorkflow: %s\nRun: %s\nType: %s\nTasklist: %s\nStatus: %s\nClose Time: %s",
+										fwdRule.Name, wf.WorkflowID, wf.RunID, wf.WorkflowType, wf.TaskList, wf.Status, wf.CloseTime)
+									if fwdRule.MessageTemplate != "" {
+										bodyMsg = fwdRule.MessageTemplate
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{rule_name}}", fwdRule.Name)
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{alert_name}}", fwdRule.Name)
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{metric_type}}", "workflow_failure")
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{metric_label}}", "workflow_failure")
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{metric_value}}", "1")
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{condition_type}}", "")
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{threshold}}", "0")
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{tenant_id}}", fmt.Sprintf("%d", t.ID))
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{workflow_id}}", wf.WorkflowID)
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{run_id}}", wf.RunID)
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{workflow_type}}", wf.WorkflowType)
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{workflow-type}}", wf.WorkflowType)
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{tasklist}}", wf.TaskList)
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{status}}", wf.Status)
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{close_time}}", wf.CloseTime)
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{domain}}", t.DomainName)
+									}
+									bodyMsg = substituteWorkflowHistoryPlaceholders(bodyMsg, &t, wf.WorkflowID, wf.RunID)
+
+									notifyPayload := map[string]interface{}{
+										"idempotency_key": newUUIDv4(),
+										"type":            "alert",
+										"channels":        []string{fwdRule.NotificationChannel},
+										"subject":         fmt.Sprintf("[WORKFLOW FAILURE] %s - %s", fwdRule.Name, wf.WorkflowType),
+										"body":            bodyMsg,
+										"recipient":       fwdRule.NotificationTarget,
+									}
+									if fwdRule.NotifyHubTemplateID != "" {
+										notifyPayload["template_id"] = fwdRule.NotifyHubTemplateID
+									}
+									if fwdRule.NotificationChannel == "slack" && fwdRule.NotificationTarget != "" {
+										notifyPayload["slack_channel"] = fwdRule.NotificationTarget
+									}
+									notifyPayload["template_variables"] = map[string]string{
+										"rule_name":     fwdRule.Name,
+										"rule_id":       fmt.Sprintf("%d", fwdRule.ID),
+										"tile_id":       fwdRule.TileID,
+										"metric_type":   "workflow_failure",
+										"metric_value":  "1",
+										"workflow_id":   wf.WorkflowID,
+										"run_id":        wf.RunID,
+										"workflow_type": wf.WorkflowType,
+										"status":        wf.Status,
+									}
+
+									payloadBytes, err := json.Marshal(notifyPayload)
+									if err != nil {
+										log.Printf("ERROR: workflow failure alert eval: marshal payload: %v", err)
+										continue
+									}
+
+									parsedBase, err := url.Parse(t.NotifyHubURL)
+									if err != nil {
+										log.Printf("ERROR: workflow failure alert eval: parse URL: %v", err)
+										continue
+									}
+									stripped := &url.URL{Scheme: parsedBase.Scheme, Host: parsedBase.Host}
+									notifyURL := stripped.JoinPath("/v1/notifications").String()
+									httpReq, err := http.NewRequest(http.MethodPost, notifyURL, bytes.NewReader(payloadBytes))
+									if err != nil {
+										log.Printf("ERROR: workflow failure alert eval: create request: %v", err)
+										continue
+									}
+									httpReq.Header.Set("Content-Type", "application/json")
+									httpReq.Header.Set("X-API-Key", t.NotifyHubAPIKey)
+
+									client := &http.Client{Timeout: 15 * time.Second}
+									resp, err := client.Do(httpReq)
+									wfStatus := "sent"
+									wfErrMsg := ""
+									if err != nil {
+										wfStatus = "failed"
+										wfErrMsg = err.Error()
+									} else {
+										if resp.StatusCode >= 400 {
+											wfStatus = "failed"
+											respBody, _ := io.ReadAll(resp.Body)
+											wfErrMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+										}
+										resp.Body.Close()
+									}
+
+									now := time.Now()
+									db.Exec(`
+										INSERT INTO alert_history (tenant_id, alert_rule_id, tile_id, metric_type,
+											metric_value, threshold, condition_type, channel, recipient, status, error_message, sent_at, workflow_id, run_id)
+										VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+										fwdRule.TenantID, fwdRule.ID, fwdRule.TileID, "workflow_failure", 1,
+										0, "", fwdRule.NotificationChannel, fwdRule.NotificationTarget, wfStatus, wfErrMsg, now, wf.WorkflowID, wf.RunID)
+
+									db.Exec(`UPDATE alert_rules SET last_triggered_at = $1 WHERE id = $2`, now, fwdRule.ID)
+									fwdRule.LastTriggeredAt = &now
+
+									log.Printf("WORKFLOW FAILURE ALERT: tenant %d rule %q workflow %s/%s -> %s",
+										t.ID, fwdRule.Name, wf.WorkflowID, wf.RunID, wfStatus)
+								}
+							}
+							fwdRows.Close()
+						}
 					}
 				}
 
@@ -5502,6 +6412,411 @@ func notifyhubWebhooksHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, webhookConfigs, http.StatusOK)
 }
 
+const (
+	maxWorkflowHistoryPages = 500
+	workflowHistoryPageSize = 100
+)
+
+// normalizeNextPageToken treats empty/null/[] tokens as no more pages.
+func normalizeNextPageToken(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return ""
+	}
+	// Token may be a JSON string or a base64 byte array.
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		return strings.TrimSpace(str)
+	}
+	var bytes []byte
+	if err := json.Unmarshal(raw, &bytes); err == nil {
+		if len(bytes) == 0 {
+			return ""
+		}
+		return base64.StdEncoding.EncodeToString(bytes)
+	}
+	return s
+}
+
+// parseHistoryPageBody extracts events and nextPageToken from Cadence Web / Cadence API responses.
+func parseHistoryPageBody(body []byte) ([]json.RawMessage, string, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		return nil, "", fmt.Errorf("decode history: %w", err)
+	}
+
+	var events []json.RawMessage
+	var nextRaw json.RawMessage
+
+	if h, ok := top["history"]; ok {
+		var hist map[string]json.RawMessage
+		if err := json.Unmarshal(h, &hist); err == nil {
+			if ev, ok := hist["events"]; ok {
+				_ = json.Unmarshal(ev, &events)
+			}
+			if tok, ok := hist["nextPageToken"]; ok {
+				nextRaw = tok
+			} else if tok, ok := hist["next_page_token"]; ok {
+				nextRaw = tok
+			}
+		}
+	}
+	if len(events) == 0 {
+		if ev, ok := top["events"]; ok {
+			_ = json.Unmarshal(ev, &events)
+		}
+	}
+	if len(nextRaw) == 0 {
+		if tok, ok := top["nextPageToken"]; ok {
+			nextRaw = tok
+		} else if tok, ok := top["next_page_token"]; ok {
+			nextRaw = tok
+		}
+	}
+
+	return events, normalizeNextPageToken(nextRaw), nil
+}
+
+// fetchWorkflowHistoryPage fetches one page of workflow history from a Cadence Web URL.
+func fetchWorkflowHistoryPage(ctx context.Context, requestURL string) ([]json.RawMessage, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("create history request: %w", err)
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("fetch history: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		return nil, "", fmt.Errorf("read history: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		snippet := string(body)
+		if len(snippet) > 2000 {
+			snippet = snippet[:2000] + "..."
+		}
+		log.Printf("ERROR: cadence web history HTTP %d url=%s body=%s", resp.StatusCode, requestURL, snippet)
+		return nil, "", fmt.Errorf("cadence web history HTTP %d: %s", resp.StatusCode, snippet)
+	}
+
+	return parseHistoryPageBody(body)
+}
+
+// fetchWorkflowHistoryAllPages downloads all history pages using pageSize + nextPageToken.
+func fetchWorkflowHistoryAllPages(ctx context.Context, basePath string) ([]json.RawMessage, error) {
+	var allEvents []json.RawMessage
+	nextPageToken := ""
+	seenTokens := map[string]struct{}{"": {}}
+
+	for page := 0; page < maxWorkflowHistoryPages; page++ {
+		q := url.Values{}
+		q.Set("pageSize", strconv.Itoa(workflowHistoryPageSize))
+		if nextPageToken != "" {
+			q.Set("nextPageToken", nextPageToken)
+		}
+		requestURL := basePath + "?" + q.Encode()
+
+		events, token, err := fetchWorkflowHistoryPage(ctx, requestURL)
+		if err != nil {
+			return nil, err
+		}
+		allEvents = append(allEvents, events...)
+
+		if token == "" {
+			break
+		}
+		if _, dup := seenTokens[token]; dup {
+			log.Printf("WARN: workflow history pagination stopped: repeated nextPageToken on page %d", page+1)
+			break
+		}
+		seenTokens[token] = struct{}{}
+		nextPageToken = token
+	}
+
+	if len(allEvents) == 0 {
+		return nil, fmt.Errorf("no history events returned from %s", basePath)
+	}
+	return allEvents, nil
+}
+
+// fetchWorkflowHistory downloads all pages of workflow execution history from Cadence web.
+// Tries cluster-scoped API first, then legacy v1 path.
+func fetchWorkflowHistory(ctx context.Context, cadenceWebURL, domain, workflowID, runID, cluster string) ([]byte, error) {
+	if cluster == "" {
+		cluster = "cluster0"
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(cadenceWebURL), "/")
+	if baseURL == "" {
+		return nil, fmt.Errorf("cadence_web_url is empty")
+	}
+	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+		baseURL = "http://" + baseURL
+	}
+
+	paths := []string{
+		fmt.Sprintf("%s/api/domains/%s/%s/workflows/%s/%s/history",
+			baseURL, url.PathEscape(domain), url.PathEscape(cluster), url.PathEscape(workflowID), url.PathEscape(runID)),
+		fmt.Sprintf("%s/api/v1/domains/%s/workflows/%s/%s/history",
+			baseURL, url.PathEscape(domain), url.PathEscape(workflowID), url.PathEscape(runID)),
+	}
+
+	var allEvents []json.RawMessage
+	var errs []string
+	for _, path := range paths {
+		events, err := fetchWorkflowHistoryAllPages(ctx, path)
+		if err == nil && len(events) > 0 {
+			allEvents = events
+			break
+		}
+		if err != nil {
+			errs = append(errs, err.Error())
+			if !strings.Contains(err.Error(), "HTTP 404") {
+				continue
+			}
+		}
+	}
+	if len(allEvents) == 0 {
+		if len(errs) > 0 {
+			return nil, fmt.Errorf("%s", strings.Join(errs, "; "))
+		}
+		return nil, fmt.Errorf("no workflow history returned (check cadence_web_url, domain, and cluster)")
+	}
+
+	output, err := json.Marshal(map[string]interface{}{
+		"workflow_id": workflowID,
+		"run_id":      runID,
+		"events":      allEvents,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal history: %w", err)
+	}
+	return output, nil
+}
+
+// workflowHistoryHandler handles GET /api/workflows/history.
+func workflowHistoryHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	tenantIDStr := r.URL.Query().Get("tenant_id")
+	if tenantIDStr == "" {
+		writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+		return
+	}
+	var tenantID int
+	if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+		writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+		return
+	}
+
+	workflowID := strings.TrimSpace(r.URL.Query().Get("workflow_id"))
+	runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+	if workflowID == "" || runID == "" {
+		writeJSONError(w, "workflow_id and run_id are required", http.StatusBadRequest)
+		return
+	}
+
+	cluster := strings.TrimSpace(r.URL.Query().Get("cluster"))
+	if cluster == "" {
+		cluster = "cluster0"
+	}
+
+	tenant, err := tenantStore.GetByID(tenantID)
+	if err != nil {
+		writeJSONError(w, fmt.Sprintf("tenant not found: %v", err), http.StatusNotFound)
+		return
+	}
+	if tenant.CadenceWebURL == "" {
+		writeJSONError(w, "cadence_web_url not configured for this tenant", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	log.Printf("INFO: fetching workflow history tenant=%d domain=%s workflow=%s run=%s cadence=%s",
+		tenantID, tenant.DomainName, workflowID, runID, tenant.CadenceWebURL)
+
+	userEmail := sessionEmailFromRequest(r)
+	historyData, err := fetchWorkflowHistory(ctx, tenant.CadenceWebURL, tenant.DomainName, workflowID, runID, cluster)
+	if err != nil {
+		log.Printf("ERROR: fetch workflow history tenant=%d user=%s workflow=%s/%s cadence=%s: %v",
+			tenantID, userEmail, workflowID, runID, tenant.CadenceWebURL, err)
+		writeJSONError(w, fmt.Sprintf("fetch workflow history: %v", err), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if _, err := w.Write(historyData); err != nil {
+		log.Printf("ERROR: write workflow history response: %v", err)
+	}
+}
+
+// uploadToGCS uploads data to a GCS bucket and returns the public URL.
+// Environment variables:
+//
+//	WORKFLOW_HISTORY_STORAGE - auto (default), gcs, or inline
+//	GCS_HISTORY_BUCKET       - GCS bucket name (required for gcs / auto+gcs)
+//	GCS_HISTORY_PREFIX       - object path prefix (default "workflow-history")
+//	GCS_ACCESS_TOKEN              - short-lived token override (optional)
+//	GCS_SERVICE_ACCOUNT_KEY_FILE  - path to service account JSON key (or use GOOGLE_APPLICATION_CREDENTIALS)
+//	GCS_SERVICE_ACCOUNT_EMAIL     - impersonate this SA via gcloud (requires iam.serviceAccountTokenCreator)
+func uploadToGCS(data []byte, objectName string) (string, error) {
+	bucket := getEnv("GCS_HISTORY_BUCKET", "")
+	if bucket == "" {
+		return "", fmt.Errorf("GCS_HISTORY_BUCKET not set")
+	}
+	prefix := getEnv("GCS_HISTORY_PREFIX", "workflow-history")
+
+	objectPath := prefix + "/" + objectName
+
+	// Get access token from metadata server or gcloud
+	token, err := getGCPAccessToken()
+	if err != nil {
+		return "", fmt.Errorf("get GCP token: %w", err)
+	}
+
+	// Upload using GCS JSON API
+	uploadURL := fmt.Sprintf("https://storage.googleapis.com/upload/storage/v1/b/%s/o?uploadType=media&name=%s",
+		bucket, url.PathEscape(objectPath))
+
+	req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(data))
+	if err != nil {
+		return "", fmt.Errorf("create upload request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("upload to GCS: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("GCS upload: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Return the public URL
+	gcsURL := fmt.Sprintf("https://storage.googleapis.com/%s/%s", bucket, objectPath)
+	return gcsURL, nil
+}
+
+const gcsStorageScope = "https://www.googleapis.com/auth/devstorage.read_write"
+
+var errGCPServiceAccountAuthNotConfigured = errors.New("gcp service account auth not configured")
+
+// getGCPAccessToken obtains a GCP access token for GCS API calls.
+func getGCPAccessToken() (string, error) {
+	if token := strings.TrimSpace(os.Getenv("GCS_ACCESS_TOKEN")); token != "" {
+		return token, nil
+	}
+
+	if token, err := getGCPAccessTokenFromServiceAccount(); err == nil {
+		return token, nil
+	} else if err != nil && !errors.Is(err, errGCPServiceAccountAuthNotConfigured) {
+		return "", err
+	}
+
+	if token, err := getGCPAccessTokenFromMetadata(); err == nil {
+		return token, nil
+	}
+
+	cmd := exec.Command("gcloud", "auth", "print-access-token")
+	output, err := cmd.Output()
+	if err == nil {
+		return strings.TrimSpace(string(output)), nil
+	}
+
+	return "", fmt.Errorf(
+		"no GCP access token available (set GCS_SERVICE_ACCOUNT_KEY_FILE, GCS_SERVICE_ACCOUNT_EMAIL, GCS_ACCESS_TOKEN, or use gcloud auth)",
+	)
+}
+
+func getGCPAccessTokenFromMetadata() (string, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest("GET", "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Metadata-Flavor", "Google")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("metadata token: HTTP %d", resp.StatusCode)
+	}
+	var result struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if result.AccessToken == "" {
+		return "", fmt.Errorf("metadata token empty")
+	}
+	return result.AccessToken, nil
+}
+
+// getGCPAccessTokenFromServiceAccount uses a JSON key file or gcloud impersonation.
+func getGCPAccessTokenFromServiceAccount() (string, error) {
+	keyFile := strings.TrimSpace(getEnv("GCS_SERVICE_ACCOUNT_KEY_FILE", ""))
+	if keyFile == "" {
+		keyFile = strings.TrimSpace(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+	}
+	email := strings.TrimSpace(getEnv("GCS_SERVICE_ACCOUNT_EMAIL", ""))
+	if keyFile == "" && email == "" {
+		return "", errGCPServiceAccountAuthNotConfigured
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if keyFile != "" {
+		data, err := os.ReadFile(keyFile)
+		if err != nil {
+			return "", fmt.Errorf("read service account key %s: %w", keyFile, err)
+		}
+		creds, err := google.CredentialsFromJSON(ctx, data, gcsStorageScope)
+		if err != nil {
+			return "", fmt.Errorf("parse service account key: %w", err)
+		}
+		tok, err := creds.TokenSource.Token()
+		if err != nil {
+			return "", fmt.Errorf("service account token: %w", err)
+		}
+		if tok.AccessToken == "" {
+			return "", fmt.Errorf("service account token empty")
+		}
+		return tok.AccessToken, nil
+	}
+
+	cmd := exec.Command("gcloud", "auth", "print-access-token", "--impersonate-service-account="+email)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("impersonate %s: %w (needs gcloud and iam.serviceAccounts.getAccessToken)", email, err)
+	}
+	token := strings.TrimSpace(string(output))
+	if token == "" {
+		return "", fmt.Errorf("impersonate %s: empty token", email)
+	}
+	return token, nil
+}
+
 func main() {
 	// Database connection
 	databaseURL := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/slo_dashboard?sslmode=disable")
@@ -5517,6 +6832,24 @@ func main() {
 		log.Fatalf("Failed to ping database: %v", err)
 	}
 	log.Printf("Connected to database")
+
+	switch workflowHistoryStorageMode() {
+	case "gcs":
+		bucket := getEnv("GCS_HISTORY_BUCKET", "")
+		if bucket == "" {
+			log.Printf("WARN: WORKFLOW_HISTORY_STORAGE=gcs but GCS_HISTORY_BUCKET is not set; history uploads will fail")
+		} else {
+			log.Printf("Workflow history: GCS upload (bucket=%s, prefix=%s)", bucket, getEnv("GCS_HISTORY_PREFIX", "workflow-history"))
+		}
+	case "inline":
+		log.Printf("Workflow history: inline JSON in Codefac/alert payloads")
+	default:
+		if workflowHistoryUseGCS() {
+			log.Printf("Workflow history: GCS upload (bucket=%s, prefix=%s)", getEnv("GCS_HISTORY_BUCKET", ""), getEnv("GCS_HISTORY_PREFIX", "workflow-history"))
+		} else {
+			log.Printf("Workflow history: inline JSON (set GCS_HISTORY_BUCKET to upload to GCS)")
+		}
+	}
 
 	// Ensure table exists
 	if err := EnsureTable(db); err != nil {
@@ -5542,6 +6875,11 @@ func main() {
 		log.Printf("WARN: could not add notifyhub_api_key column: %v", err)
 	}
 
+	// Migration: add cadence_web_url column
+	if _, err := db.Exec(`ALTER TABLE tenants ADD COLUMN IF NOT EXISTS cadence_web_url TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add cadence_web_url column: %v", err)
+	}
+
 	// Ensure alert_rules table exists
 	if err := EnsureAlertsTable(db); err != nil {
 		log.Fatalf("Failed to ensure alert_rules table: %v", err)
@@ -5561,6 +6899,9 @@ func main() {
 	// Migration: add ses_region column to alert_rules for per-region SES alerts
 	if _, err := db.Exec(`ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS ses_region TEXT NOT NULL DEFAULT ''`); err != nil {
 		log.Printf("WARN: could not add ses_region column: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE alert_rules ADD COLUMN IF NOT EXISTS cooldown_seconds INTEGER NOT NULL DEFAULT 300`); err != nil {
+		log.Printf("WARN: could not add cooldown_seconds column to alert_rules: %v", err)
 	}
 
 	// Ensure notification_channels table exists
@@ -5602,6 +6943,9 @@ func main() {
 		log.Fatalf("Failed to ensure codefac_pipelines table: %v", err)
 	}
 	log.Printf("Codefac pipelines table ready")
+	if _, err := db.Exec(`ALTER TABLE codefac_pipelines ADD COLUMN IF NOT EXISTS cooldown_seconds INTEGER NOT NULL DEFAULT 300`); err != nil {
+		log.Printf("WARN: could not add cooldown_seconds column to codefac_pipelines: %v", err)
+	}
 
 	// Ensure rbac table exists
 	if err := EnsureRBACTable(db); err != nil {
@@ -5650,6 +6994,21 @@ func main() {
 				}
 				return true
 			})
+
+			// Purge old notified failure entries (older than 1 hour)
+			cutoff := time.Now().Add(-1 * time.Hour)
+			notifiedFailures.Range(func(k, v any) bool {
+				if ts, ok := v.(time.Time); ok && ts.Before(cutoff) {
+					notifiedFailures.Delete(k)
+				}
+				return true
+			})
+
+			// Purge triggered rules (just clear the whole map periodically)
+			triggeredRules.Range(func(k, v any) bool {
+				triggeredRules.Delete(k)
+				return true
+			})
 		}
 	}()
 
@@ -5657,6 +7016,7 @@ func main() {
 	http.HandleFunc("/api/auth/verify", corsMiddleware(authVerifyHandler))
 	http.HandleFunc("/api/auth/me", corsMiddleware(authMeHandler))
 	http.HandleFunc("/api/workflows", corsMiddleware(requireAuth(workflowsHandler)))
+	http.HandleFunc("/api/workflows/history", corsMiddleware(requireAuth(workflowHistoryHandler)))
 	http.HandleFunc("/api/tenants", corsMiddleware(requireAuth(tenantsHandler)))
 	http.HandleFunc("/api/tenants/delete", corsMiddleware(requireAuth(tenantDeleteHandler)))
 	http.HandleFunc("/api/ses-metrics", corsMiddleware(requireAuth(sesMetricsHandler)))
