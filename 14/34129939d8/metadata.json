@@ -1,0 +1,35 @@
+{
+  "cli_version": "0.6.3",
+  "checkpoint_id": "1434129939d8",
+  "strategy": "manual-commit",
+  "branch": "workflow-error-slo",
+  "checkpoints_count": 7,
+  "files_touched": [
+    "background-slo/README.md",
+    "background-slo/backend/main.go",
+    "background-slo/docs/local-setup-runbook.md",
+    "background-slo/frontend/src/App.jsx",
+    "background-slo/frontend/src/components/ActivityErrors.css",
+    "background-slo/frontend/src/components/ActivityErrors.jsx",
+    "background-slo/frontend/src/components/RecentFailures.css",
+    "background-slo/frontend/src/components/RecentFailures.jsx",
+    "background-slo/frontend/src/components/WorkflowHistoryModal.css",
+    "background-slo/frontend/src/components/WorkflowHistoryModal.jsx",
+    "background-slo/frontend/src/pages/ActivityErrorsPage.jsx"
+  ],
+  "sessions": [
+    {
+      "metadata": "/14/34129939d8/0/metadata.json",
+      "transcript": "/14/34129939d8/0/full.jsonl",
+      "content_hash": "/14/34129939d8/0/content_hash.txt",
+      "prompt": "/14/34129939d8/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 4313821,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 23497600,
+    "output_tokens": 132258,
+    "api_call_count": 217
+  }
+}

@@ -1,0 +1,139 @@
+{
+  "cli_version": "0.6.3",
+  "checkpoint_id": "1434129939d8",
+  "session_id": "019e8207-7747-7002-990b-bccfc5b60827",
+  "strategy": "manual-commit",
+  "created_at": "2026-06-01T12:10:20.100506Z",
+  "branch": "workflow-error-slo",
+  "checkpoints_count": 7,
+  "files_touched": [
+    "background-slo/README.md",
+    "background-slo/backend/main.go",
+    "background-slo/docs/local-setup-runbook.md",
+    "background-slo/frontend/src/App.jsx",
+    "background-slo/frontend/src/components/ActivityErrors.css",
+    "background-slo/frontend/src/components/ActivityErrors.jsx",
+    "background-slo/frontend/src/components/RecentFailures.css",
+    "background-slo/frontend/src/components/RecentFailures.jsx",
+    "background-slo/frontend/src/components/WorkflowHistoryModal.css",
+    "background-slo/frontend/src/components/WorkflowHistoryModal.jsx",
+    "background-slo/frontend/src/pages/ActivityErrorsPage.jsx"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.4",
+  "turn_id": "d1145e62ad2f",
+  "token_usage": {
+    "input_tokens": 4313821,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 23497600,
+    "output_tokens": 132258,
+    "api_call_count": 217
+  },
+  "session_metrics": {
+    "turn_count": 7
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-06-01T12:10:19.873209Z",
+    "agent_lines": 451,
+    "agent_removed": 94,
+    "human_added": 1580,
+    "human_modified": 494,
+    "human_removed": 0,
+    "total_committed": 2322,
+    "total_lines_changed": 2619,
+    "agent_percentage": 20.80946926307751,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 78,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0,
+      "user_added_per_file": {
+        ".codex/agents/entire-search.toml": 23,
+        ".codex/config.toml": 3,
+        ".codex/hooks.json": 52
+      }
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1246,
+      "agent_lines_removed": 276
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 68,
+      "user_lines_removed": 39,
+      "agent_lines_added": 1249,
+      "agent_lines_removed": 276,
+      "user_added_per_file": {
+        "background-slo/backend/main.go": 68
+      },
+      "user_removed_per_file": {
+        "background-slo/backend/main.go": 39
+      }
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1278,
+      "agent_lines_removed": 276
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1278,
+      "agent_lines_removed": 276
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1278,
+      "agent_lines_removed": 276
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1339,
+      "agent_lines_removed": 334
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 981,
+      "user_lines_removed": 201,
+      "agent_lines_added": 1869,
+      "agent_lines_removed": 334,
+      "user_added_per_file": {
+        "background-slo/README.md": 93,
+        "background-slo/backend/main.go": 221,
+        "background-slo/docs/local-setup-runbook.md": 2,
+        "background-slo/frontend/src/App.jsx": 19,
+        "background-slo/frontend/src/components/ActivityErrors.css": 5,
+        "background-slo/frontend/src/components/ActivityErrors.jsx": 113,
+        "background-slo/frontend/src/components/RecentFailures.css": 62,
+        "background-slo/frontend/src/components/RecentFailures.jsx": 34,
+        "background-slo/frontend/src/components/WorkflowHistoryModal.css": 15,
+        "background-slo/frontend/src/components/WorkflowHistoryModal.jsx": 417
+      },
+      "user_removed_per_file": {
+        "background-slo/README.md": 37,
+        "background-slo/backend/main.go": 47,
+        "background-slo/frontend/src/App.jsx": 1,
+        "background-slo/frontend/src/components/ActivityErrors.css": 1,
+        "background-slo/frontend/src/components/ActivityErrors.jsx": 55,
+        "background-slo/frontend/src/components/RecentFailures.css": 23,
+        "background-slo/frontend/src/components/RecentFailures.jsx": 16,
+        "background-slo/frontend/src/components/WorkflowHistoryModal.css": 1,
+        "background-slo/frontend/src/components/WorkflowHistoryModal.jsx": 20
+      }
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+we have attached elastic search for cadence (cadence visibility index), so that it helps in cadence web.  
+
+it only provides basic details like workflowtype, start and end time, status,etc but default it doesnt provide us with failure reason or failure message
+but i want to know each workflow's failure reason also in the elastic search 
+how can we get this failure reason from the cadence and store it in es 
+
+i want you go through the documentation and blogs and tell me what to do
+how can we do this without changing the workflows code
+
+the process which is already running to call es and get all those workflows details:
+watch closed/failed/timed-out/terminated workflows
+call Cadence history API for each run
+read the final close event
+extract reason/message
+store in db (new table: workflow-history or any table we use from existing) 
+from there we will show in the dashboard (for each domain) separately
+
+for now i am not thinking of adding those details to ES directly, 
+let us store those extra fields we need in our db (slo-dashboard) 
+so that we dont pollute ES 
+
+currently we have this (as shown in the image)
+AIM: for each workflow type we need to show count of each error type count when we toggle a workflow type
+we need to make code changes accordingly
+
+---
+
+we have attached elastic search for cadence (cadence visibility index), so that it helps in cadence web.  
+
+it only provides basic details like workflowtype, start and end time, status,etc but default it doesnt provide us with failure reason or failure message
+but i want to know each workflow's failure reason also in the elastic search 
+how can we get this failure reason from the cadence and store it in es 
+
+i thought of this solution
+
+the process which is already running to call es and get all those workflows details:
+watch closed/failed/timed-out/terminated workflows
+call Cadence history API for each run
+read the final close event
+extract reason/message
+store in db (new table: workflow-history or any table we use from existing) 
+from there we will show in the dashboard (for each domain) separately
+
+for now i am not thinking of adding those details to ES directly, 
+let us store those extra fields we need in our db (slo-dashboard) 
+so that we dont pollute ES 
+
+currently we have this (as shown in the image)
+AIM: for each workflow type we need to show count of each error type count when we toggle a workflow type
+we need to make code changes accordingly
+
+---
+
+important: we wont be fetching same workflow history twice we need to optimise the flow
+check are we doing it or not 
+
+also make a sequence diagram on what is the flow, how slo dashboard is working
+
+---
+
+here in the image, this pages updated every 10seconds 
+
+when we call GET /api/workflows?tenant_id=...&filters=...
+if got some failed workflows which are not stored in the db yet then 
+it becomes an issue
+
+---
+
+here in the image, this pages updated every 10seconds 
+
+when we call GET /api/workflows?tenant_id=...&filters=...
+if got some failed workflows which are not stored in the db yet then 
+it becomes an issue
+
+first tell me what we should, then we think about it
+
+---
+
+lets do one thing: lets go with the flow which was earlier
+keep the 10seconds as it is 
+On GET /api/workflows, detect gap, not solve gap synchronously
+we get new failed/timedout workflows list from the query
+from that we filter which workflows details not in our postgres 
+then we fetch them async 
+but when we try to show each error category we only which we have processed 
+if any left to show which we havent processed then show latest failures errors exists and will be added… at the bottom (after showing which we already have)
+
+did you get what is said, tell me what you understood
+
+---
+
+No you got it wrong
+
+The API response should immediately return actual value provided by ES only
+but the error categories (we show with workflowType would change) only shows which are in DB 
+(and a small tag: Latest failure errors exist and will be added… if any difference in db to es count)
+
+from that we would know live workflows failed, but the category will get added soon after 10seconds i think
+
+---
+
+yes now you are right!
+
+now make the code changes according to our new plan
+(also check the codes that you have added in this session once, if we dont need them remove them)
+
+---
+
+now tell me how to run this codebase 
+make a runbook, consider that i dont have any context over this codebase 
+after reading the md file and its steps i should be able to setup and run the codebase 
+if there are port forwardings for local setup add them also
