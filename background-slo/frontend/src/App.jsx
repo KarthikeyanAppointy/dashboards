@@ -87,6 +87,24 @@ const PAGE_META = {
   },
 };
 
+function normalizeActivityStatus(status) {
+  return String(status || "")
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/_/g, "");
+}
+
+function isFailedTimeoutOnlyFilter(statuses) {
+  return (
+    Array.isArray(statuses) &&
+    statuses.length > 0 &&
+    statuses.every((status) => {
+      const normalized = normalizeActivityStatus(status);
+      return normalized === "failed" || normalized === "timeout" || normalized === "timedout";
+    })
+  );
+}
+
 function App() {
   const { user, checking } = useAuth();
 
@@ -132,15 +150,6 @@ function AppContent() {
     const saved = localStorage.getItem("slo_dashboard_activity_status_filter");
     return saved ? saved.split(",") : [];
   });
-
-  const [activityErrorDetailField, setActivityErrorDetailField] = useState(
-    () => {
-      const saved = localStorage.getItem(
-        "slo_dashboard_activity_error_detail_field",
-      );
-      return saved || "";
-    },
-  );
 
   const [tasklistFilter, setTasklistFilter] = useState(() => {
     const saved = localStorage.getItem("slo_dashboard_tasklist_filter");
@@ -333,11 +342,16 @@ function AppContent() {
 
   const buildQueryString = useCallback(() => {
     const params = new URLSearchParams();
+    const effectiveStatusFilter =
+      location.pathname === "/activity-errors" &&
+      isFailedTimeoutOnlyFilter(activityStatusFilter)
+        ? activityStatusFilter
+        : statusFilter;
     params.set("tenant_id", selectedTenantId);
     params.set("limit", limit);
     params.set("tasklist_window", tasklistWindow);
-    if (statusFilter.length > 0 && statusFilter.length < 2) {
-      params.set("status_filter", statusFilter.join(","));
+    if (effectiveStatusFilter.length > 0 && effectiveStatusFilter.length < 2) {
+      params.set("status_filter", effectiveStatusFilter.join(","));
     }
     if (tasklistFilter.length > 0) {
       params.set("tasklist_filter", tasklistFilter.join(","));
@@ -354,11 +368,9 @@ function AppContent() {
     if (activityStatusFilter.length > 0) {
       params.set("activity_status_filter", activityStatusFilter.join(","));
     }
-    if (activityErrorDetailField) {
-      params.set("activity_error_detail_field", activityErrorDetailField);
-    }
     return params.toString();
   }, [
+    location.pathname,
     selectedTenantId,
     limit,
     tasklistWindow,
@@ -368,7 +380,6 @@ function AppContent() {
     endTime,
     offset,
     activityStatusFilter,
-    activityErrorDetailField,
   ]);
 
   const fetchData = useCallback(async () => {
@@ -455,11 +466,6 @@ function AppContent() {
       "slo_dashboard_activity_status_filter",
       newFilter.join(","),
     );
-  };
-
-  const handleActivityErrorDetailFieldChange = (newField) => {
-    setActivityErrorDetailField(newField);
-    localStorage.setItem("slo_dashboard_activity_error_detail_field", newField);
   };
 
   const handleTasklistFilterChange = (newFilter) => {
@@ -881,10 +887,6 @@ function AppContent() {
                         activityStatusFilter={activityStatusFilter}
                         onActivityStatusFilterChange={
                           handleActivityStatusFilterChange
-                        }
-                        activityErrorDetailField={activityErrorDetailField}
-                        onActivityErrorDetailFieldChange={
-                          handleActivityErrorDetailFieldChange
                         }
                       />
                     ) : (

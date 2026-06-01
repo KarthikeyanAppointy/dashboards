@@ -244,6 +244,11 @@ function RecentFailures({
   );
   const [triggering, setTriggering] = useState({});
   const [triggeredMap, setTriggeredMap] = useState({});
+  const extraPipelineColumns =
+    codefacPipelines && codefacPipelines.length > 0 && notificationsEnabled
+      ? 3
+      : 0;
+  const emptyColSpan = 6 + extraPipelineColumns;
 
   const filteredFailures = (failures || []).filter((f) => {
     const statusMatch =
@@ -483,12 +488,12 @@ function RecentFailures({
                 {codefacPipelines &&
                   codefacPipelines.length > 0 &&
                   notificationsEnabled && <th style={{ width: "36px" }}></th>}
-                <th>Workflow ID</th>
-                <th>Run ID</th>
-                <th>Type</th>
-                <th>Tasklist</th>
-                <th style={{ width: "72px" }}>Status</th>
-                <th style={{ width: "100px" }}>Close Time</th>
+                <th className="col-workflow-run">Workflow / Run</th>
+                <th className="col-failure-reason">Failure Reason</th>
+                <th className="col-workflow-type">Type</th>
+                <th className="col-tasklist">Tasklist</th>
+                <th className="col-status">Status</th>
+                <th className="col-close-time">Close Time</th>
                 {codefacPipelines &&
                   codefacPipelines.length > 0 &&
                   notificationsEnabled && (
@@ -501,7 +506,7 @@ function RecentFailures({
             </thead>
             <tbody>
               <tr>
-                <td colSpan={9} className="no-matches-cell">
+                <td colSpan={emptyColSpan} className="no-matches-cell">
                   No workflows match the selected filters.
                 </td>
               </tr>
@@ -516,12 +521,12 @@ function RecentFailures({
                 {codefacPipelines &&
                   codefacPipelines.length > 0 &&
                   notificationsEnabled && <th style={{ width: "36px" }}></th>}
-                <th>Workflow ID</th>
-                <th>Run ID</th>
-                <th>Type</th>
-                <th>Tasklist</th>
-                <th style={{ width: "72px" }}>Status</th>
-                <th style={{ width: "100px" }}>Close Time</th>
+                <th className="col-workflow-run">Workflow / Run</th>
+                <th className="col-failure-reason">Failure Reason</th>
+                <th className="col-workflow-type">Type</th>
+                <th className="col-tasklist">Tasklist</th>
+                <th className="col-status">Status</th>
+                <th className="col-close-time">Close Time</th>
                 {codefacPipelines &&
                   codefacPipelines.length > 0 &&
                   notificationsEnabled && (
@@ -581,10 +586,23 @@ function RecentFailures({
                       </td>
                     )}
                   <td className="cell-id">
-                    <code title={f.workflow_id}>{f.workflow_id}</code>
+                    <div className="cell-id-stack">
+                      <div className="cell-id-line">
+                        <span className="cell-id-label">Workflow</span>
+                        <code title={f.workflow_id}>{f.workflow_id}</code>
+                      </div>
+                      <div className="cell-id-line">
+                        <span className="cell-id-label">Run</span>
+                        <code title={f.run_id}>{f.run_id}</code>
+                      </div>
+                    </div>
                   </td>
-                  <td className="cell-run-id">
-                    <code title={f.run_id}>{f.run_id}</code>
+                  <td className="cell-reason" title={f.failure_reason || ""}>
+                    {f.failure_reason ? (
+                      <code>{f.failure_reason}</code>
+                    ) : (
+                      <span className="cell-reason-empty">—</span>
+                    )}
                   </td>
                   <td className="cell-type" title={f.workflow_type}>
                     {f.workflow_type}

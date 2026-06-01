@@ -252,9 +252,10 @@
 .wf-decision-edge {
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: space-between;
     width: 100%;
     padding: 2px 0 6px;
+    gap: 12px;
 }
 
 .wf-decision-edge-label {
@@ -267,6 +268,13 @@
     border: 1px dashed var(--border);
     border-radius: 999px;
     background: var(--surface);
+}
+
+.wf-decision-edge-meta {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--fg-tertiary);
+    white-space: nowrap;
 }
 
 /* Activity / workflow nodes */
@@ -372,6 +380,12 @@
 .wf-node-subtitle {
     font-size: 11px;
     color: var(--fg-secondary);
+}
+
+.wf-node-meta {
+    font-size: 10px;
+    color: var(--fg-tertiary);
+    line-height: 1.35;
 }
 
 .wf-empty {
