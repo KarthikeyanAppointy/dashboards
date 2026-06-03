@@ -1,0 +1,246 @@
+{
+  "cli_version": "0.6.3",
+  "checkpoint_id": "13eda29a0eca",
+  "session_id": "019e8835-bbda-7ff2-9d5d-b58b2a0995ae",
+  "strategy": "manual-commit",
+  "created_at": "2026-06-03T05:37:52.621062Z",
+  "branch": "workflow-error-slo",
+  "checkpoints_count": 24,
+  "files_touched": [
+    "background-slo/backend/main.go",
+    "background-slo/frontend/src/App.jsx",
+    "background-slo/frontend/src/auth/AuthContext.jsx",
+    "background-slo/frontend/src/components/RecentFailures.css",
+    "background-slo/frontend/src/components/RecentFailures.jsx",
+    "background-slo/frontend/src/components/Sidebar.jsx",
+    "background-slo/frontend/src/pages/NotificationsPage.css",
+    "background-slo/frontend/src/pages/PipelineErrorsPage.jsx"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.4",
+  "turn_id": "75b3914c1ba8",
+  "token_usage": {
+    "input_tokens": 1736103,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 30825472,
+    "output_tokens": 174538,
+    "api_call_count": 271
+  },
+  "session_metrics": {
+    "turn_count": 26
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-06-03T05:37:52.428671Z",
+    "agent_lines": 1118,
+    "agent_removed": 257,
+    "human_added": 585,
+    "human_modified": 214,
+    "human_removed": 0,
+    "total_committed": 1840,
+    "total_lines_changed": 2174,
+    "agent_percentage": 63.24747010119596,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1001,
+      "agent_lines_removed": 6
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1068,
+      "agent_lines_removed": 6
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1068,
+      "agent_lines_removed": 6
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1155,
+      "agent_lines_removed": 6
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1155,
+      "agent_lines_removed": 6
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 0,
+      "user_lines_removed": 57,
+      "agent_lines_added": 1155,
+      "agent_lines_removed": 6,
+      "user_removed_per_file": {
+        "background-slo/backend/main.go": 49,
+        "background-slo/frontend/src/App.jsx": 8
+      }
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1145,
+      "agent_lines_removed": 7
+    },
+    {
+      "checkpoint_number": 9,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1145,
+      "agent_lines_removed": 7
+    },
+    {
+      "checkpoint_number": 10,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1145,
+      "agent_lines_removed": 7
+    },
+    {
+      "checkpoint_number": 11,
+      "user_lines_added": 3,
+      "user_lines_removed": 3,
+      "agent_lines_added": 1561,
+      "agent_lines_removed": 7,
+      "user_added_per_file": {
+        "background-slo/frontend/src/App.jsx": 2,
+        "background-slo/frontend/src/components/Sidebar.jsx": 1
+      },
+      "user_removed_per_file": {
+        "background-slo/frontend/src/App.jsx": 2,
+        "background-slo/frontend/src/components/Sidebar.jsx": 1
+      }
+    },
+    {
+      "checkpoint_number": 12,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1157,
+      "agent_lines_removed": 7
+    },
+    {
+      "checkpoint_number": 13,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1157,
+      "agent_lines_removed": 7
+    },
+    {
+      "checkpoint_number": 14,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1157,
+      "agent_lines_removed": 7
+    },
+    {
+      "checkpoint_number": 15,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1162,
+      "agent_lines_removed": 8
+    },
+    {
+      "checkpoint_number": 16,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1162,
+      "agent_lines_removed": 8
+    },
+    {
+      "checkpoint_number": 17,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1162,
+      "agent_lines_removed": 8
+    },
+    {
+      "checkpoint_number": 18,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1232,
+      "agent_lines_removed": 11
+    },
+    {
+      "checkpoint_number": 19,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1264,
+      "agent_lines_removed": 24
+    },
+    {
+      "checkpoint_number": 20,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1264,
+      "agent_lines_removed": 24
+    },
+    {
+      "checkpoint_number": 21,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1631,
+      "agent_lines_removed": 394
+    },
+    {
+      "checkpoint_number": 22,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1635,
+      "agent_lines_removed": 394
+    },
+    {
+      "checkpoint_number": 23,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1635,
+      "agent_lines_removed": 394
+    },
+    {
+      "checkpoint_number": 24,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 1632,
+      "agent_lines_removed": 394
+    },
+    {
+      "checkpoint_number": 25,
+      "user_lines_added": 398,
+      "user_lines_removed": 77,
+      "agent_lines_added": 1656,
+      "agent_lines_removed": 394,
+      "user_added_per_file": {
+        "background-slo/backend/main.go": 111,
+        "background-slo/frontend/src/components/RecentFailures.css": 5,
+        "background-slo/frontend/src/components/RecentFailures.jsx": 117,
+        "background-slo/frontend/src/components/Sidebar.jsx": 5,
+        "background-slo/frontend/src/pages/PipelineErrorsPage.jsx": 160
+      },
+      "user_removed_per_file": {
+        "background-slo/frontend/src/components/RecentFailures.css": 1,
+        "background-slo/frontend/src/components/RecentFailures.jsx": 33,
+        "background-slo/frontend/src/components/Sidebar.jsx": 5,
+        "background-slo/frontend/src/pages/PipelineErrorsPage.jsx": 38
+      }
+    }
+  ]
+}

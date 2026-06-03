@@ -1,0 +1,186 @@
+check how are we trigger codefac with pipeline when ever a failed workflow happen in ES
+
+---
+
+check whether the backend triggers Codefac for every failed workflow we got from ES or not.
+is there any link up to cool down period
+
+---
+
+what we want is:
+
+if any workflow id, run id having error and we triggered it to codefac,
+if any new workflow with same error comes in again for different workflow id runid 
+then we should not trigger to codefac,
+maintain a redis db such that we would know for this workflow type, and error we already triggered pipeline for codefac
+
+i want this feature, implement properly
+maintain a new sidebar section to know what are the workflowtype error workflow ids are triggered and which are skipped due to already processed for that same specific workflow type error
+
+---
+
+wait change the naming conventions to GET /api/codefac-pipeline
+keep proper naming convention instead of codefac at least say pipeline
+
+instead of redis as we already have postgres lets use that instead of this new redis 
+
+also explain me the code that you have added!
+i am unable to understand make a sequence diagram
+
+---
+
+yes
+
+---
+
+no no we are not inserting events 
+instead for every failed workflow we maintain status 
+our workflow is the single row 
+then think about the columns needed accordingly
+
+---
+
+no no we are not inserting events 
+instead we maintain a row every failed workflow & we maintain status 
+our workflow is the single row 
+then think about the columns needed accordingly
+
+---
+
+can you help me understand the code, i am unable to understand 
+
+earlier how we were triggering codefac (with what input and now what input)
+what code changes did we make
+
+---
+
+can you help me understand the code, i am unable to understand 
+
+earlier how we were triggering codefac (with what input and now what input with code block)
+what code changes did we make now (code block to understand)
+
+are we sending full workflow history to codefac?
+
+---
+
+backend git:(workflow-error-slo) ✗ DATABASE_URL="REDACTED" \
+PORT="8081" \
+GOOGLE_CLIENT_ID="{}" \
+APPONTY_ONLY_LOGIN="false" \
+ADMIN_KEY="local-admin-key" \
+go run main.go
+# command-line-arguments
+./main.go:6998:25: undefined: workflowFailureErrorDetails
+./main.go:6999:28: undefined: upsertPipelineWorkflowFailure
+./main.go:7004:12: undefined: pipelineWorkflowFailureIsFinal
+./main.go:7008:20: undefined: markPipelineWorkflowFailureFromHistory
+./main.go:7014:20: undefined: markPipelineWorkflowFailureCooldown
+./main.go:7019:29: undefined: findBlockingPipelineWorkflowFailure
+./main.go:7025:24: undefined: pipelineWorkflowFailureStatusSkippedDuplicate
+./main.go:7026:35: undefined: pipelineWorkflowFailureStatusProcessing
+./main.go:7027:24: undefined: pipelineWorkflowFailureStatusSkippedInflight
+./main.go:7029:20: undefined: markPipelineWorkflowFailureSkipped
+./main.go:7029:20: too many errors
+
+remove all those codes
+
+---
+
+wait sorry i mean remove all those errors not all those code changes, keep those changes again
+
+---
+
+check this image
+
+---
+
+did you added everything we needed! in main.go
+
+---
+
+improve the page, instead of pipeline errors, say pipeline requests 
+also improve page UI
+
+---
+
+change the endpoint name too,
+Make the UI simple (just like before you made it worse now)
+
+---
+
+http://localhost:5173/pipeline-errors to http://localhost:5173/pipeline-requests
+also the sidebar name
+
+---
+
+2026/06/03 00:43:14   Port: 8081
+2026/06/03 00:43:14 Starting workflow failure enrichment workers (4)
+2026/06/03 00:43:14 Serving frontend from: ./frontend
+2026/06/03 00:43:14 Listening on :8081
+2026/06/03 00:43:14 Starting SES data refresher (every 60s)
+2026/06/03 00:43:14 Starting dashboard data refresher (every 30s)
+2026/06/03 00:43:14 Starting alert evaluator (every 30s)
+2026/06/03 00:43:28 WARN: workflow failure queue tenant=2 lookup evt_01KT3Y46HJ6TDS2T8XVH9WFC1X4/267d1af1-42fd-4e96-ab7f-39de76f1ebbf: lookup stored workflow failure evt_01KT3Y46HJ6TDS2T8XVH9WFC1X4/267d1af1-42fd-4e96-ab7f-39de76f1ebbf: context canceled
+2026/06/03 00:44:10 WARN: workflow failure queue tenant=2 lookup evt_01KT3Y46HJ6TDS2T8XVH9WFC1X4/267d1af1-42fd-4e96-ab7f-39de76f1ebbf: lookup stored workflow failure evt_01KT3Y46HJ6TDS2T8XVH9WFC1X4/267d1af1-42fd-4e96-ab7f-39de76f1ebbf: context canceled
+2026/06/03 00:44:10 WARN: workflow failure queue tenant=2 lookup evt_01KT3Y46HJ6TDS2T8XVH9WFC1X4/267d1af1-42fd-4e96-ab7f-39de76f1ebbf: lookup stored workflow failure evt_01KT3Y46HJ6TDS2T8XVH9WFC1X4/267d1af1-42fd-4e96-ab7f-39de76f1ebbf: context canceled
+
+why context canecelled coming here
+
+---
+
+fix this issue
+
+---
+
+i am running the backend & frontend, there is one failed workflow, but it not triggered for codefac check it
+i see no pipelines details in the table pipeline_workflow_failures
+
+check whats happening
+
+---
+
+you do it and provide me command for reference
+
+---
+
+i made a workflow fail, but it didnt trigger the codefac check
+
+---
+
+new error
+
+---
+
+also why do we need notifyhub url for codefac trigger
+
+---
+
+check i have set url + api key still it is not triggering 
+i also failed a workflow fail
+
+---
+
+even for same workflowid runid we are saying it "Skipped duplicate" but we only one row per workflow id/run id if some workflow is triggered we wont even make it as skipped duplicate and show it as new row
+
+---
+
+run it yourself
+
+---
+
+move the count of total requests, triggered, etc to above filter
+
+also here we see failed workflows got triggered, but both have same error i think we are not checking the full error message
+we only trigger when workflowtype+error is new 
+
+same workflow_id+run_id should stay as single row (if new runid then new row is ok)
+
+---
+
+how about we show failure reason and failure details both in the UI in that column (if text is too long trim it in the UI show only few lines)
+
+also the count you are showing above the boxes and number and text are not properly set according to the css all are touching each
+
+---
+
+also the count you are showing above the boxes and number and text are not properly set according to the css all are touching each
