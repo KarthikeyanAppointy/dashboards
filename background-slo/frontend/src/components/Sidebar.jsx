@@ -269,6 +269,11 @@ const NAV_SECTIONS = [
       { to: "/recent-failures", label: "Failures", Icon: IconFailures },
       { to: "/activity-errors", label: "Activity Errors", Icon: IconActivity },
       { to: "/p100-latency", label: "P100 Latency", Icon: IconLatency },
+      {
+        to: "/pipeline-requests",
+        label: "Pipeline Requests",
+        Icon: IconHistory,
+      },
     ],
   },
   {
@@ -314,6 +319,7 @@ function Sidebar({ domainName, userPermissions }) {
     "/p100-latency": "p100-latency",
     "/ses": "ses",
     "/notifications": "notifications",
+    "/pipeline-requests": "notifications",
     "/report-history": "report-history",
     "/peoples": "peoples",
     "/admin/clients": "admin",

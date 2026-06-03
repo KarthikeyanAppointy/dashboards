@@ -196,10 +196,14 @@
     border: 1px solid color-mix(in srgb, var(--danger-fg) 16%, transparent);
     padding: 3px 7px;
     border-radius: var(--radius-xs);
-    display: inline-block;
+    display: -webkit-inline-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
     white-space: normal;
     word-break: break-word;
     line-height: 1.45;
+    overflow: hidden;
+    max-width: 100%;
 }
 
 .cell-reason-empty {

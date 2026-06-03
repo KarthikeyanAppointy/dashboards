@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -411,6 +413,791 @@ func applyCodefacWorkflowPayload(
 	payloadStr = strings.ReplaceAll(payloadStr, "{{close_time}}", wf.CloseTime)
 	payloadStr = strings.ReplaceAll(payloadStr, "{{idempotency_key}}", newUUIDv4())
 	return substituteWorkflowHistoryPlaceholders(payloadStr, tenant, wf.WorkflowID, wf.RunID)
+}
+
+const (
+	pipelineWorkflowFailureStatusPending          = "pending"
+	pipelineWorkflowFailureStatusProcessing       = "processing"
+	pipelineWorkflowFailureStatusTriggered        = "triggered"
+	pipelineWorkflowFailureStatusSkippedDuplicate = "skipped_duplicate"
+	pipelineWorkflowFailureStatusSkippedInflight  = "skipped_inflight"
+	pipelineWorkflowFailureStatusSkippedCooldown  = "skipped_cooldown"
+	pipelineWorkflowFailureStatusTriggerFailed    = "trigger_failed"
+	pipelineWorkflowFailureStaleAfter             = 5 * time.Minute
+)
+
+type pipelineWorkflowErrorDetails struct {
+	Text      string
+	Signature string
+}
+
+type pipelineWorkflowFailureRow struct {
+	ID                  int        `json:"id"`
+	TenantID            int        `json:"tenant_id"`
+	PipelineID          int        `json:"pipeline_id"`
+	PipelineName        string     `json:"pipeline_name"`
+	WorkflowID          string     `json:"workflow_id"`
+	RunID               string     `json:"run_id"`
+	WorkflowType        string     `json:"workflow_type"`
+	SourceStatus        string     `json:"source_status"`
+	Status              string     `json:"status"`
+	ErrorSignature      string     `json:"error_signature"`
+	ErrorText           string     `json:"error_text"`
+	MatchedFailureID    *int       `json:"matched_failure_id"`
+	MatchedWorkflowID   string     `json:"matched_workflow_id"`
+	MatchedRunID        string     `json:"matched_run_id"`
+	MatchedTriggeredAt  *time.Time `json:"matched_triggered_at"`
+	DeliveryStatus      string     `json:"delivery_status"`
+	ErrorMessage        string     `json:"error_message"`
+	TriggerAttempts     int        `json:"trigger_attempts"`
+	FirstSeenAt         time.Time  `json:"first_seen_at"`
+	LastSeenAt          time.Time  `json:"last_seen_at"`
+	ProcessingStartedAt *time.Time `json:"processing_started_at"`
+	TriggeredAt         *time.Time `json:"triggered_at"`
+	ProcessedAt         *time.Time `json:"processed_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+}
+
+type manualPipelineRequestRow struct {
+	ID             int       `json:"id"`
+	TenantID       int       `json:"tenant_id"`
+	PipelineName   string    `json:"pipeline_name"`
+	Recipient      string    `json:"recipient"`
+	Status         string    `json:"status"`
+	DeliveryStatus string    `json:"delivery_status"`
+	ErrorMessage   string    `json:"error_message"`
+	WorkflowID     string    `json:"workflow_id"`
+	RunID          string    `json:"run_id"`
+	WorkflowType   string    `json:"workflow_type"`
+	SourceStatus   string    `json:"source_status"`
+	ErrorText      string    `json:"error_text"`
+	SentAt         time.Time `json:"sent_at"`
+}
+
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func normalizeWorkflowErrorSignature(errorText string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(errorText))
+	if trimmed == "" {
+		return ""
+	}
+	trimmed = strings.Join(strings.Fields(trimmed), " ")
+	sum := sha256.Sum256([]byte(trimmed))
+	return hex.EncodeToString(sum[:])
+}
+
+func loadStoredWorkflowFailureText(ctx context.Context, tenantID int, workflowID string, runID string) (string, error) {
+	var reason string
+	var message string
+	var details string
+	var fetchError string
+	var closeStatus int
+	err := db.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(NULLIF(failure_reason, ''), '') AS failure_reason,
+			COALESCE(NULLIF(failure_message, ''), '') AS failure_message,
+			COALESCE(NULLIF(failure_details, ''), '') AS failure_details,
+			COALESCE(NULLIF(history_fetch_error, ''), '') AS history_fetch_error,
+			close_status
+		FROM workflow_failures
+		WHERE tenant_id = $1 AND workflow_id = $2 AND run_id = $3`,
+		tenantID, workflowID, runID,
+	).Scan(&reason, &message, &details, &fetchError, &closeStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return storedActivityErrorText(reason, message, details, fetchError, workflowCloseStatusLabel(closeStatus)), nil
+}
+
+func loadRecentStoredWorkflowFailures(ctx context.Context, tenantID int, limit int, window time.Duration) ([]RecentWorkflow, error) {
+	if tenantID <= 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if window <= 0 {
+		window = time.Hour
+	}
+
+	fromNanos := time.Now().Add(-window).UnixNano()
+	rows, err := db.QueryContext(ctx, `
+		SELECT
+			workflow_id,
+			run_id,
+			workflow_type,
+			tasklist,
+			close_status,
+			close_time_ns,
+			COALESCE(NULLIF(failure_reason, ''), '')
+		FROM workflow_failures
+		WHERE tenant_id = $1
+		  AND close_status IN (1, 5)
+		  AND close_time_ns >= $2
+		ORDER BY close_time_ns DESC
+		LIMIT $3`,
+		tenantID, fromNanos, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load recent stored workflow failures: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]RecentWorkflow, 0, limit)
+	for rows.Next() {
+		var wf RecentWorkflow
+		var closeStatus int
+		var closeTimeNs int64
+		if err := rows.Scan(
+			&wf.WorkflowID,
+			&wf.RunID,
+			&wf.WorkflowType,
+			&wf.TaskList,
+			&closeStatus,
+			&closeTimeNs,
+			&wf.FailureReason,
+		); err != nil {
+			return nil, fmt.Errorf("scan recent stored workflow failure: %w", err)
+		}
+		wf.Status = workflowCloseStatusLabel(closeStatus)
+		wf.CloseTime = time.Unix(0, closeTimeNs).UTC().Format(time.RFC3339)
+		results = append(results, wf)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate recent stored workflow failures: %w", err)
+	}
+	return results, nil
+}
+
+func workflowFailureErrorDetails(ctx context.Context, tenantID int, wf RecentWorkflow) pipelineWorkflowErrorDetails {
+	signatureText := ""
+	storedText, err := loadStoredWorkflowFailureText(ctx, tenantID, wf.WorkflowID, wf.RunID)
+	if err != nil {
+		log.Printf("WARN: pipeline dedupe: load stored failure text tenant=%d workflow=%s run=%s: %v", tenantID, wf.WorkflowID, wf.RunID, err)
+	} else {
+		signatureText = strings.TrimSpace(storedText)
+	}
+	if signatureText == "" {
+		signatureText = strings.TrimSpace(wf.FailureReason)
+	}
+
+	displayText := signatureText
+	if displayText == "" {
+		displayText = strings.TrimSpace(wf.Status)
+	}
+	if displayText == "" {
+		displayText = "Unknown error"
+	}
+
+	return pipelineWorkflowErrorDetails{
+		Text:      displayText,
+		Signature: normalizeWorkflowErrorSignature(signatureText),
+	}
+}
+
+func EnsurePipelineWorkflowFailuresTable(db *sql.DB) error {
+	query := `
+	CREATE TABLE IF NOT EXISTS pipeline_workflow_failures (
+		id SERIAL PRIMARY KEY,
+		tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		pipeline_id INTEGER NOT NULL REFERENCES codefac_pipelines(id) ON DELETE CASCADE,
+		pipeline_name TEXT NOT NULL DEFAULT '',
+		workflow_id TEXT NOT NULL DEFAULT '',
+		run_id TEXT NOT NULL DEFAULT '',
+		workflow_type TEXT NOT NULL DEFAULT '',
+		source_status TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'pending',
+		error_signature TEXT NOT NULL DEFAULT '',
+		error_text TEXT NOT NULL DEFAULT '',
+		matched_failure_id INTEGER REFERENCES pipeline_workflow_failures(id) ON DELETE SET NULL,
+		matched_workflow_id TEXT NOT NULL DEFAULT '',
+		matched_run_id TEXT NOT NULL DEFAULT '',
+		matched_triggered_at TIMESTAMPTZ,
+		delivery_status TEXT NOT NULL DEFAULT '',
+		error_message TEXT NOT NULL DEFAULT '',
+		trigger_attempts INTEGER NOT NULL DEFAULT 0,
+		first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		processing_started_at TIMESTAMPTZ,
+		triggered_at TIMESTAMPTZ,
+		processed_at TIMESTAMPTZ,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		UNIQUE (tenant_id, pipeline_id, workflow_id, run_id)
+	);`
+	if _, err := db.Exec(query); err != nil {
+		return fmt.Errorf("create pipeline_workflow_failures table: %w", err)
+	}
+
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_pipeline_workflow_failures_tenant_updated ON pipeline_workflow_failures (tenant_id, updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_pipeline_workflow_failures_lookup ON pipeline_workflow_failures (tenant_id, pipeline_id, workflow_type, error_signature, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_pipeline_workflow_failures_status ON pipeline_workflow_failures (tenant_id, status, updated_at DESC)`,
+	}
+	for _, stmt := range indexes {
+		if _, err := db.Exec(stmt); err != nil {
+			log.Printf("WARN: could not ensure pipeline_workflow_failures index %q: %v", stmt, err)
+		}
+	}
+	return nil
+}
+
+func scanPipelineWorkflowFailure(row scanner) (*pipelineWorkflowFailureRow, error) {
+	var item pipelineWorkflowFailureRow
+	var matchedFailureID sql.NullInt64
+	var matchedTriggeredAt sql.NullTime
+	var processingStartedAt sql.NullTime
+	var triggeredAt sql.NullTime
+	var processedAt sql.NullTime
+
+	err := row.Scan(
+		&item.ID,
+		&item.TenantID,
+		&item.PipelineID,
+		&item.PipelineName,
+		&item.WorkflowID,
+		&item.RunID,
+		&item.WorkflowType,
+		&item.SourceStatus,
+		&item.Status,
+		&item.ErrorSignature,
+		&item.ErrorText,
+		&matchedFailureID,
+		&item.MatchedWorkflowID,
+		&item.MatchedRunID,
+		&matchedTriggeredAt,
+		&item.DeliveryStatus,
+		&item.ErrorMessage,
+		&item.TriggerAttempts,
+		&item.FirstSeenAt,
+		&item.LastSeenAt,
+		&processingStartedAt,
+		&triggeredAt,
+		&processedAt,
+		&item.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if matchedFailureID.Valid {
+		value := int(matchedFailureID.Int64)
+		item.MatchedFailureID = &value
+	}
+	if matchedTriggeredAt.Valid {
+		value := matchedTriggeredAt.Time
+		item.MatchedTriggeredAt = &value
+	}
+	if processingStartedAt.Valid {
+		value := processingStartedAt.Time
+		item.ProcessingStartedAt = &value
+	}
+	if triggeredAt.Valid {
+		value := triggeredAt.Time
+		item.TriggeredAt = &value
+	}
+	if processedAt.Valid {
+		value := processedAt.Time
+		item.ProcessedAt = &value
+	}
+	return &item, nil
+}
+
+func pipelineWorkflowFailureColumns() string {
+	return `
+		id, tenant_id, pipeline_id, pipeline_name, workflow_id, run_id, workflow_type,
+		source_status, status, error_signature, error_text, matched_failure_id,
+		matched_workflow_id, matched_run_id, matched_triggered_at, delivery_status,
+		error_message, trigger_attempts, first_seen_at, last_seen_at,
+		processing_started_at, triggered_at, processed_at, updated_at`
+}
+
+func upsertPipelineWorkflowFailure(
+	ctx context.Context,
+	tenantID int,
+	pipe CodefacPipeline,
+	wf RecentWorkflow,
+	errorDetails pipelineWorkflowErrorDetails,
+) (*pipelineWorkflowFailureRow, error) {
+	row := db.QueryRowContext(ctx, `
+		INSERT INTO pipeline_workflow_failures (
+			tenant_id, pipeline_id, pipeline_name, workflow_id, run_id, workflow_type,
+			source_status, status, error_signature, error_text, delivery_status,
+			first_seen_at, last_seen_at, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '', NOW(), NOW(), NOW())
+		ON CONFLICT (tenant_id, pipeline_id, workflow_id, run_id) DO UPDATE
+		SET
+			pipeline_name = EXCLUDED.pipeline_name,
+			workflow_type = EXCLUDED.workflow_type,
+			source_status = EXCLUDED.source_status,
+			error_signature = CASE
+				WHEN EXCLUDED.error_signature <> '' THEN EXCLUDED.error_signature
+				ELSE pipeline_workflow_failures.error_signature
+			END,
+			error_text = CASE
+				WHEN EXCLUDED.error_text <> '' THEN EXCLUDED.error_text
+				ELSE pipeline_workflow_failures.error_text
+			END,
+			last_seen_at = NOW(),
+			updated_at = NOW()
+		RETURNING `+pipelineWorkflowFailureColumns(),
+		tenantID,
+		pipe.ID,
+		pipe.Name,
+		wf.WorkflowID,
+		wf.RunID,
+		wf.WorkflowType,
+		wf.Status,
+		pipelineWorkflowFailureStatusPending,
+		errorDetails.Signature,
+		errorDetails.Text,
+	)
+	return scanPipelineWorkflowFailure(row)
+}
+
+func pipelineWorkflowFailureIsFinal(status string) bool {
+	return status == pipelineWorkflowFailureStatusTriggered || status == pipelineWorkflowFailureStatusSkippedDuplicate
+}
+
+func findBlockingPipelineWorkflowFailure(
+	ctx context.Context,
+	current *pipelineWorkflowFailureRow,
+) (*pipelineWorkflowFailureRow, error) {
+	if current == nil || current.ErrorSignature == "" {
+		return nil, nil
+	}
+
+	for {
+		row := db.QueryRowContext(ctx, `
+			SELECT `+pipelineWorkflowFailureColumns()+`
+			FROM pipeline_workflow_failures
+			WHERE tenant_id = $1
+			  AND pipeline_id = $2
+			  AND workflow_type = $3
+			  AND error_signature = $4
+			  AND id <> $5
+			  AND status IN ($6, $7)
+			ORDER BY
+			  CASE status
+				WHEN $6 THEN 0
+				WHEN $7 THEN 1
+				ELSE 2
+			  END,
+			  COALESCE(triggered_at, processing_started_at, updated_at) ASC,
+			  id ASC
+			LIMIT 1`,
+			current.TenantID,
+			current.PipelineID,
+			current.WorkflowType,
+			current.ErrorSignature,
+			current.ID,
+			pipelineWorkflowFailureStatusTriggered,
+			pipelineWorkflowFailureStatusProcessing,
+		)
+		blocking, err := scanPipelineWorkflowFailure(row)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if blocking.Status != pipelineWorkflowFailureStatusProcessing ||
+			blocking.ProcessingStartedAt == nil ||
+			time.Since(blocking.ProcessingStartedAt.UTC()) <= pipelineWorkflowFailureStaleAfter {
+			return blocking, nil
+		}
+		if err := expireStalePipelineWorkflowFailure(ctx, blocking); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func expireStalePipelineWorkflowFailure(ctx context.Context, row *pipelineWorkflowFailureRow) error {
+	if row == nil || row.ID <= 0 {
+		return nil
+	}
+	_, err := db.ExecContext(ctx, `
+		UPDATE pipeline_workflow_failures
+		SET
+			status = $2,
+			delivery_status = 'failed',
+			error_message = $3,
+			processing_started_at = NULL,
+			processed_at = NOW(),
+			updated_at = NOW()
+		WHERE id = $1
+		  AND status = $4`,
+		row.ID,
+		pipelineWorkflowFailureStatusTriggerFailed,
+		"processing lease expired before pipeline delivery completed",
+		pipelineWorkflowFailureStatusProcessing,
+	)
+	return err
+}
+
+func markPipelineWorkflowFailureFromHistory(ctx context.Context, row *pipelineWorkflowFailureRow) error {
+	if row == nil || row.ID <= 0 {
+		return nil
+	}
+	_, err := db.ExecContext(ctx, `
+		UPDATE pipeline_workflow_failures
+		SET
+			status = $2,
+			delivery_status = 'sent',
+			error_message = '',
+			matched_failure_id = NULL,
+			matched_workflow_id = '',
+			matched_run_id = '',
+			matched_triggered_at = NULL,
+			processing_started_at = NULL,
+			triggered_at = COALESCE(triggered_at, NOW()),
+			processed_at = COALESCE(processed_at, NOW()),
+			updated_at = NOW()
+		WHERE id = $1`,
+		row.ID,
+		pipelineWorkflowFailureStatusTriggered,
+	)
+	return err
+}
+
+func markPipelineWorkflowFailureCooldown(
+	ctx context.Context,
+	row *pipelineWorkflowFailureRow,
+	lastTriggeredAt *time.Time,
+) error {
+	if row == nil || row.ID <= 0 {
+		return nil
+	}
+	message := "pipeline cooldown active"
+	if lastTriggeredAt != nil {
+		message = fmt.Sprintf("pipeline cooldown active after %s", lastTriggeredAt.UTC().Format(time.RFC3339))
+	}
+	_, err := db.ExecContext(ctx, `
+		UPDATE pipeline_workflow_failures
+		SET
+			status = $2,
+			delivery_status = 'skipped',
+			error_message = $3,
+			matched_failure_id = NULL,
+			matched_workflow_id = '',
+			matched_run_id = '',
+			matched_triggered_at = NULL,
+			processing_started_at = NULL,
+			processed_at = NOW(),
+			updated_at = NOW()
+		WHERE id = $1`,
+		row.ID,
+		pipelineWorkflowFailureStatusSkippedCooldown,
+		message,
+	)
+	return err
+}
+
+func markPipelineWorkflowFailureSkipped(
+	ctx context.Context,
+	row *pipelineWorkflowFailureRow,
+	status string,
+	matched *pipelineWorkflowFailureRow,
+) error {
+	if row == nil || row.ID <= 0 {
+		return nil
+	}
+
+	var matchedFailureID any = nil
+	matchedWorkflowID := ""
+	matchedRunID := ""
+	var matchedTriggeredAt any = nil
+	errorMessage := ""
+	if matched != nil {
+		matchedFailureID = matched.ID
+		matchedWorkflowID = matched.WorkflowID
+		matchedRunID = matched.RunID
+		if matched.TriggeredAt != nil {
+			matchedTriggeredAt = matched.TriggeredAt
+		}
+		if status == pipelineWorkflowFailureStatusSkippedDuplicate {
+			errorMessage = "same workflow type and error already triggered earlier"
+		}
+		if status == pipelineWorkflowFailureStatusSkippedInflight {
+			errorMessage = "same workflow type and error is already being processed"
+		}
+	}
+
+	_, err := db.ExecContext(ctx, `
+		UPDATE pipeline_workflow_failures
+		SET
+			status = $2,
+			matched_failure_id = $3,
+			matched_workflow_id = $4,
+			matched_run_id = $5,
+			matched_triggered_at = $6,
+			delivery_status = 'skipped',
+			error_message = $7,
+			processing_started_at = NULL,
+			processed_at = NOW(),
+			updated_at = NOW()
+		WHERE id = $1`,
+		row.ID,
+		status,
+		matchedFailureID,
+		matchedWorkflowID,
+		matchedRunID,
+		matchedTriggeredAt,
+		errorMessage,
+	)
+	return err
+}
+
+func markPipelineWorkflowFailureProcessing(
+	ctx context.Context,
+	row *pipelineWorkflowFailureRow,
+	errorDetails pipelineWorkflowErrorDetails,
+) error {
+	if row == nil || row.ID <= 0 {
+		return nil
+	}
+	_, err := db.ExecContext(ctx, `
+		UPDATE pipeline_workflow_failures
+		SET
+			status = $2,
+			error_signature = $3,
+			error_text = $4,
+			matched_failure_id = NULL,
+			matched_workflow_id = '',
+			matched_run_id = '',
+			matched_triggered_at = NULL,
+			delivery_status = 'pending',
+			error_message = '',
+			trigger_attempts = trigger_attempts + 1,
+			processing_started_at = NOW(),
+			processed_at = NULL,
+			updated_at = NOW()
+		WHERE id = $1`,
+		row.ID,
+		pipelineWorkflowFailureStatusProcessing,
+		errorDetails.Signature,
+		errorDetails.Text,
+	)
+	return err
+}
+
+func markPipelineWorkflowFailureTriggered(
+	ctx context.Context,
+	row *pipelineWorkflowFailureRow,
+	now time.Time,
+) error {
+	if row == nil || row.ID <= 0 {
+		return nil
+	}
+	_, err := db.ExecContext(ctx, `
+		UPDATE pipeline_workflow_failures
+		SET
+			status = $2,
+			delivery_status = 'sent',
+			error_message = '',
+			processing_started_at = NULL,
+			triggered_at = $3,
+			processed_at = $3,
+			updated_at = $3
+		WHERE id = $1`,
+		row.ID,
+		pipelineWorkflowFailureStatusTriggered,
+		now,
+	)
+	return err
+}
+
+func markPipelineWorkflowFailureFailed(
+	ctx context.Context,
+	row *pipelineWorkflowFailureRow,
+	errorMessage string,
+	now time.Time,
+) error {
+	if row == nil || row.ID <= 0 {
+		return nil
+	}
+	_, err := db.ExecContext(ctx, `
+		UPDATE pipeline_workflow_failures
+		SET
+			status = $2,
+			delivery_status = 'failed',
+			error_message = $3,
+			processing_started_at = NULL,
+			processed_at = $4,
+			updated_at = $4
+		WHERE id = $1`,
+		row.ID,
+		pipelineWorkflowFailureStatusTriggerFailed,
+		errorMessage,
+		now,
+	)
+	return err
+}
+
+func pipelineWorkflowFailuresHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	tenantIDStr := r.URL.Query().Get("tenant_id")
+	if tenantIDStr == "" {
+		writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
+		return
+	}
+
+	var tenantID int
+	if _, err := fmt.Sscanf(tenantIDStr, "%d", &tenantID); err != nil || tenantID <= 0 {
+		writeJSONError(w, "invalid tenant_id", http.StatusBadRequest)
+		return
+	}
+
+	limit := 200
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 1000 {
+			limit = parsed
+		}
+	}
+
+	offset := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	source := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("source")))
+	if source == "manual" {
+		rows, err := db.Query(`
+			SELECT
+				ah.id,
+				ah.tenant_id,
+				COALESCE(NULLIF(cp.name, ''), NULLIF(ah.recipient, ''), 'Manual pipeline') AS pipeline_name,
+				ah.recipient,
+				ah.status,
+				ah.status AS delivery_status,
+				ah.error_message,
+				ah.workflow_id,
+				ah.run_id,
+				COALESCE(NULLIF(wf.workflow_type, ''), '') AS workflow_type,
+				CASE
+					WHEN wf.close_status = 1 THEN 'Failed'
+					WHEN wf.close_status = 5 THEN 'TimedOut'
+					ELSE ''
+				END AS source_status,
+				COALESCE(NULLIF(wf.failure_reason, ''), '') AS failure_reason,
+				COALESCE(NULLIF(wf.failure_message, ''), '') AS failure_message,
+				COALESCE(NULLIF(wf.failure_details, ''), '') AS failure_details,
+				COALESCE(NULLIF(wf.history_fetch_error, ''), '') AS history_fetch_error,
+				COALESCE(wf.close_status, 0) AS close_status,
+				ah.sent_at
+			FROM alert_history ah
+			LEFT JOIN codefac_pipelines cp
+				ON cp.tenant_id = ah.tenant_id
+			   AND cp.pipeline_name = ah.recipient
+			LEFT JOIN workflow_failures wf
+				ON wf.tenant_id = ah.tenant_id
+			   AND wf.workflow_id = ah.workflow_id
+			   AND wf.run_id = ah.run_id
+			WHERE ah.tenant_id = $1
+			  AND ah.channel = 'pipeline'
+			  AND ah.metric_type = 'workflow_failure'
+			  AND ah.alert_rule_id IS NULL
+			ORDER BY ah.sent_at DESC, ah.id DESC
+			LIMIT $2 OFFSET $3`,
+			tenantID, limit, offset,
+		)
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("list manual pipeline requests: %v", err), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		results := make([]manualPipelineRequestRow, 0)
+		for rows.Next() {
+			var item manualPipelineRequestRow
+			var reason string
+			var message string
+			var details string
+			var fetchError string
+			var closeStatus int
+			if err := rows.Scan(
+				&item.ID,
+				&item.TenantID,
+				&item.PipelineName,
+				&item.Recipient,
+				&item.Status,
+				&item.DeliveryStatus,
+				&item.ErrorMessage,
+				&item.WorkflowID,
+				&item.RunID,
+				&item.WorkflowType,
+				&item.SourceStatus,
+				&reason,
+				&message,
+				&details,
+				&fetchError,
+				&closeStatus,
+				&item.SentAt,
+			); err != nil {
+				writeJSONError(w, fmt.Sprintf("scan manual pipeline request: %v", err), http.StatusInternalServerError)
+				return
+			}
+			item.ErrorText = storedActivityErrorText(reason, message, details, fetchError, workflowCloseStatusLabel(closeStatus))
+			results = append(results, item)
+		}
+		if err := rows.Err(); err != nil {
+			writeJSONError(w, fmt.Sprintf("iterate manual pipeline requests: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		writeJSON(w, map[string]any{
+			"results": results,
+			"limit":   limit,
+			"offset":  offset,
+			"source":  "manual",
+		}, http.StatusOK)
+		return
+	}
+
+	rows, err := db.Query(`
+		SELECT `+pipelineWorkflowFailureColumns()+`
+		FROM pipeline_workflow_failures
+		WHERE tenant_id = $1
+		ORDER BY COALESCE(processed_at, updated_at) DESC, id DESC
+		LIMIT $2 OFFSET $3`,
+		tenantID, limit, offset,
+	)
+	if err != nil {
+		writeJSONError(w, fmt.Sprintf("list pipeline workflow failures: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	results := make([]pipelineWorkflowFailureRow, 0)
+	for rows.Next() {
+		item, err := scanPipelineWorkflowFailure(rows)
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("scan pipeline workflow failure: %v", err), http.StatusInternalServerError)
+			return
+		}
+		results = append(results, *item)
+	}
+	if err := rows.Err(); err != nil {
+		writeJSONError(w, fmt.Sprintf("iterate pipeline workflow failures: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"results": results,
+		"limit":   limit,
+		"offset":  offset,
+		"source":  "es",
+	}, http.StatusOK)
 }
 
 // EnsureAlertsTable creates the alert_rules table if it doesn't exist.
@@ -3468,7 +4255,11 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 
 	recentHits := recentWorkflowHitsFromMultiSearch(msResp)
 	if len(recentHits) > 0 {
-		queueWorkflowFailureEnrichment(r.Context(), tenant, recentHits)
+		// Detach queue preparation from the HTTP request so request cancellation
+		// does not interrupt the lookup/enqueue pre-checks.
+		enrichCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		queueWorkflowFailureEnrichment(enrichCtx, tenant, recentHits)
+		cancel()
 	}
 
 	// Serialize and write
@@ -6419,6 +7210,9 @@ func startDashboardRefresher(ctx context.Context) {
 				continue
 			}
 			apiResp, totalFailed := buildResponse(cfg, t.ID, msResp, 20, []int{1, 5}, "", "", 3600)
+			if recentHits := recentWorkflowHitsFromMultiSearch(msResp); len(recentHits) > 0 {
+				queueWorkflowFailureEnrichment(ctx, &t, recentHits)
+			}
 			storedErrors, err := loadStoredActivityErrors(ctx, t.ID, 3600, 0, 0, nil, []int{1, 5})
 			if err != nil {
 				log.Printf("WARN: dashboard refresh tenant %d stored activity errors: %v", t.ID, err)
@@ -6536,448 +7330,452 @@ func startAlertEvaluator(ctx context.Context) {
 				}
 				rows.Close()
 
-				if len(rules) == 0 {
-					continue
+				// Dashboard cache is only required for threshold-style alert_rules.
+				// Workflow failure pipeline requests should still run even if there are
+				// no standard rules or no cached dashboard snapshot yet.
+				var data *APIResponse
+				if cacheVal, ok := dashboardCache.Load(t.ID); ok {
+					entry := cacheVal.(*dashboardCacheEntry)
+					entry.mu.RLock()
+					data = entry.Data
+					entry.mu.RUnlock()
 				}
 
-				// Get cached dashboard data
-				cacheVal, ok := dashboardCache.Load(t.ID)
-				if !ok {
-					continue
-				}
-				entry := cacheVal.(*dashboardCacheEntry)
-				entry.mu.RLock()
-				data := entry.Data
-				entry.mu.RUnlock()
-				if data == nil {
-					continue
-				}
+				// Evaluate threshold-style alert rules only when both rules and cached
+				// dashboard data are available.
+				if len(rules) > 0 && data != nil {
+					for _, rule := range rules {
+						var metricValue float64
+						var metricLabel string
+						found := false
 
-				// Evaluate each rule
-				for _, rule := range rules {
-					var metricValue float64
-					var metricLabel string
-					found := false
-
-					switch rule.MetricType {
-					case "success_rate":
-						if data.Rates1d.Total > 0 && data.Rates1d.SuccessPct != "N/A" {
-							if v, err := strconv.ParseFloat(data.Rates1d.SuccessPct, 64); err == nil {
-								metricValue = v
-								metricLabel = "success_rate"
-								found = true
-							}
-						}
-					case "failure_rate":
-						if data.Rates1d.Total > 0 && data.Rates1d.FailurePct != "N/A" {
-							if v, err := strconv.ParseFloat(data.Rates1d.FailurePct, 64); err == nil {
-								metricValue = v
-								metricLabel = "failure_rate"
-								found = true
-							}
-						}
-					case "volume":
-						metricValue = float64(data.Rates1d.Total)
-						metricLabel = "volume"
-						found = true
-					case "latency_p100":
-						if len(data.Windows) > 2 {
-							metricValue = float64(data.Windows[2].P100LatencyMs) // 24h window
-							metricLabel = "latency_p100"
-							found = true
-						}
-
-					case "ses_bounce_rate", "ses_complaint_rate", "ses_error_rate":
-						// Evaluate against sesCache for the specified region
-						region := rule.SESRegion
-						if region == "" {
-							region = getEnv("AWS_REGION", "us-east-1")
-						}
-						cacheVal, ok := sesCache.Load(region)
-						if !ok {
-							continue
-						}
-						sentry := cacheVal.(*sesCacheEntry)
-						sentry.mu.RLock()
-						sdata := sentry.Data
-						sentry.mu.RUnlock()
-						if sdata == nil || sdata.Sends == 0 {
-							continue
-						}
 						switch rule.MetricType {
-						case "ses_bounce_rate":
-							if v, err := strconv.ParseFloat(strings.ReplaceAll(sdata.BounceRate, "%", ""), 64); err == nil {
-								metricValue = v
-								metricLabel = "ses_bounce_rate"
+						case "success_rate":
+							if data.Rates1d.Total > 0 && data.Rates1d.SuccessPct != "N/A" {
+								if v, err := strconv.ParseFloat(data.Rates1d.SuccessPct, 64); err == nil {
+									metricValue = v
+									metricLabel = "success_rate"
+									found = true
+								}
+							}
+						case "failure_rate":
+							if data.Rates1d.Total > 0 && data.Rates1d.FailurePct != "N/A" {
+								if v, err := strconv.ParseFloat(data.Rates1d.FailurePct, 64); err == nil {
+									metricValue = v
+									metricLabel = "failure_rate"
+									found = true
+								}
+							}
+						case "volume":
+							metricValue = float64(data.Rates1d.Total)
+							metricLabel = "volume"
+							found = true
+						case "latency_p100":
+							if len(data.Windows) > 2 {
+								metricValue = float64(data.Windows[2].P100LatencyMs) // 24h window
+								metricLabel = "latency_p100"
 								found = true
 							}
-						case "ses_complaint_rate":
-							if v, err := strconv.ParseFloat(strings.ReplaceAll(sdata.ComplaintRate, "%", ""), 64); err == nil {
-								metricValue = v
-								metricLabel = "ses_complaint_rate"
-								found = true
-							}
-						case "ses_error_rate":
-							if v, err := strconv.ParseFloat(strings.ReplaceAll(sdata.ErrorRate, "%", ""), 64); err == nil {
-								metricValue = v
-								metricLabel = "ses_error_rate"
-								found = true
-							}
-						}
 
-					case "ses_send_volume":
-						region := rule.SESRegion
-						if region == "" {
-							region = getEnv("AWS_REGION", "us-east-1")
-						}
-						cacheVal, ok := sesCache.Load(region)
-						if !ok {
-							continue
-						}
-						sentry := cacheVal.(*sesCacheEntry)
-						sentry.mu.RLock()
-						sdata := sentry.Data
-						sentry.mu.RUnlock()
-						if sdata == nil {
-							continue
-						}
-						metricValue = float64(sdata.Sends)
-						metricLabel = "ses_send_volume"
-						found = true
-
-					case "ses_bounce_count":
-						region := rule.SESRegion
-						if region == "" {
-							region = getEnv("AWS_REGION", "us-east-1")
-						}
-						cacheVal, ok := sesCache.Load(region)
-						if !ok {
-							continue
-						}
-						sentry := cacheVal.(*sesCacheEntry)
-						sentry.mu.RLock()
-						sdata := sentry.Data
-						sentry.mu.RUnlock()
-						if sdata == nil {
-							continue
-						}
-						metricValue = float64(sdata.Bounces)
-						metricLabel = "ses_bounce_count"
-						found = true
-
-					case "ses_complaint_count":
-						region := rule.SESRegion
-						if region == "" {
-							region = getEnv("AWS_REGION", "us-east-1")
-						}
-						cacheVal, ok := sesCache.Load(region)
-						if !ok {
-							continue
-						}
-						sentry := cacheVal.(*sesCacheEntry)
-						sentry.mu.RLock()
-						sdata := sentry.Data
-						sentry.mu.RUnlock()
-						if sdata == nil {
-							continue
-						}
-						metricValue = float64(sdata.Complaints)
-						metricLabel = "ses_complaint_count"
-						found = true
-					}
-
-					if !found {
-						continue
-					}
-
-					// Check condition
-					triggered := false
-					switch rule.ConditionType {
-					case "greater_than":
-						triggered = metricValue > rule.Threshold
-					case "less_than":
-						triggered = metricValue < rule.Threshold
-					}
-
-					if !triggered {
-						// Condition not met — clear episode state so zero-cooldown rules can re-arm
-						if rule.CooldownSeconds <= 0 {
-							triggerKey := fmt.Sprintf("%d:%d", t.ID, rule.ID)
-							triggeredRules.Delete(triggerKey)
-						}
-						continue
-					}
-
-					if alertRuleInCooldown(rule.LastTriggeredAt, rule.CooldownSeconds) {
-						continue
-					}
-
-					// Zero-cooldown rules fire once per breach episode until condition clears
-					if rule.CooldownSeconds <= 0 {
-						triggerKey := fmt.Sprintf("%d:%d", t.ID, rule.ID)
-						if _, alreadyFired := triggeredRules.LoadOrStore(triggerKey, true); alreadyFired {
-							continue
-						}
-					}
-
-					// Send notification via NotifyHub
-					if t.NotifyHubURL == "" || t.NotifyHubAPIKey == "" {
-						log.Printf("WARN: tenant %d has no NotifyHub config, cannot send alert", t.ID)
-						continue
-					}
-
-					// Use custom message template if available
-					bodyMsg := fmt.Sprintf("Alert %q triggered: %s is %.2f (threshold: %s %.2f)", rule.Name, metricLabel, metricValue, rule.ConditionType, rule.Threshold)
-					if rule.MessageTemplate != "" {
-						bodyMsg = rule.MessageTemplate
-						bodyMsg = strings.ReplaceAll(bodyMsg, "{{rule_name}}", rule.Name)
-						bodyMsg = strings.ReplaceAll(bodyMsg, "{{metric_type}}", rule.MetricType)
-						bodyMsg = strings.ReplaceAll(bodyMsg, "{{metric_label}}", metricLabel)
-						bodyMsg = strings.ReplaceAll(bodyMsg, "{{metric_value}}", fmt.Sprintf("%.2f", metricValue))
-						bodyMsg = strings.ReplaceAll(bodyMsg, "{{condition_type}}", rule.ConditionType)
-						bodyMsg = strings.ReplaceAll(bodyMsg, "{{threshold}}", fmt.Sprintf("%.2f", rule.Threshold))
-						bodyMsg = strings.ReplaceAll(bodyMsg, "{{tenant_id}}", fmt.Sprintf("%d", t.ID))
-						bodyMsg = strings.ReplaceAll(bodyMsg, "{{alert_name}}", rule.Name)
-
-						// Add {{dashboard_info}} from cached dashboard data
-						if data != nil {
-							var dashLines []string
-							dashLines = append(dashLines, fmt.Sprintf("Domain: %s", data.DomainName))
-							dashLines = append(dashLines, fmt.Sprintf("Period (30min): Success= %s | Failure= %s | Volume= %d", data.Rates30min.SuccessPct, data.Rates30min.FailurePct, data.Rates30min.Total))
-							dashLines = append(dashLines, fmt.Sprintf("Period (1hr):   Success= %s | Failure= %s | Volume= %d", data.Rates1hr.SuccessPct, data.Rates1hr.FailurePct, data.Rates1hr.Total))
-							dashLines = append(dashLines, fmt.Sprintf("Period (1d):    Success= %s | Failure= %s | Volume= %d", data.Rates1d.SuccessPct, data.Rates1d.FailurePct, data.Rates1d.Total))
-							dashLines = append(dashLines, fmt.Sprintf("Period (7d):    Success= %s | Failure= %s | Volume= %d", data.Rates7d.SuccessPct, data.Rates7d.FailurePct, data.Rates7d.Total))
-							dashLines = append(dashLines, fmt.Sprintf("Period (30d):   Success= %s | Failure= %s | Volume= %d", data.Rates30d.SuccessPct, data.Rates30d.FailurePct, data.Rates30d.Total))
-							bodyMsg = strings.ReplaceAll(bodyMsg, "{{dashboard_info}}", strings.Join(dashLines, "\n"))
-						} else {
-							bodyMsg = strings.ReplaceAll(bodyMsg, "{{dashboard_info}}", "")
-						}
-
-						// Add SES-specific template variables for SES-related rules
-						bodyMsg = strings.ReplaceAll(bodyMsg, "{{ses_region}}", rule.SESRegion)
-						if strings.HasPrefix(rule.MetricType, "ses_") {
+						case "ses_bounce_rate", "ses_complaint_rate", "ses_error_rate":
+							// Evaluate against sesCache for the specified region
 							region := rule.SESRegion
 							if region == "" {
 								region = getEnv("AWS_REGION", "us-east-1")
 							}
-							bodyMsg = strings.ReplaceAll(bodyMsg, "{{ses_region}}", region)
-							if cacheVal, ok := sesCache.Load(region); ok {
-								sentry := cacheVal.(*sesCacheEntry)
-								sentry.mu.RLock()
-								sdata := sentry.Data
-								sentry.mu.RUnlock()
-								if sdata != nil {
-									bodyMsg = strings.ReplaceAll(bodyMsg, "{{total_sends}}", fmt.Sprintf("%d", sdata.Sends))
-									bodyMsg = strings.ReplaceAll(bodyMsg, "{{bounces}}", fmt.Sprintf("%d", sdata.Bounces))
-									bodyMsg = strings.ReplaceAll(bodyMsg, "{{complaints}}", fmt.Sprintf("%d", sdata.Complaints))
-									bodyMsg = strings.ReplaceAll(bodyMsg, "{{rejects}}", fmt.Sprintf("%d", sdata.Rejects))
-									bodyMsg = strings.ReplaceAll(bodyMsg, "{{bounce_rate}}", sdata.BounceRate)
-									bodyMsg = strings.ReplaceAll(bodyMsg, "{{complaint_rate}}", sdata.ComplaintRate)
-									bodyMsg = strings.ReplaceAll(bodyMsg, "{{error_rate}}", sdata.ErrorRate)
-									bodyMsg = strings.ReplaceAll(bodyMsg, "{{permanent_bounces}}", fmt.Sprintf("%d", sdata.PermanentBounces))
-									bodyMsg = strings.ReplaceAll(bodyMsg, "{{transient_bounces}}", fmt.Sprintf("%d", sdata.TransientBounces))
+							cacheVal, ok := sesCache.Load(region)
+							if !ok {
+								continue
+							}
+							sentry := cacheVal.(*sesCacheEntry)
+							sentry.mu.RLock()
+							sdata := sentry.Data
+							sentry.mu.RUnlock()
+							if sdata == nil || sdata.Sends == 0 {
+								continue
+							}
+							switch rule.MetricType {
+							case "ses_bounce_rate":
+								if v, err := strconv.ParseFloat(strings.ReplaceAll(sdata.BounceRate, "%", ""), 64); err == nil {
+									metricValue = v
+									metricLabel = "ses_bounce_rate"
+									found = true
+								}
+							case "ses_complaint_rate":
+								if v, err := strconv.ParseFloat(strings.ReplaceAll(sdata.ComplaintRate, "%", ""), 64); err == nil {
+									metricValue = v
+									metricLabel = "ses_complaint_rate"
+									found = true
+								}
+							case "ses_error_rate":
+								if v, err := strconv.ParseFloat(strings.ReplaceAll(sdata.ErrorRate, "%", ""), 64); err == nil {
+									metricValue = v
+									metricLabel = "ses_error_rate"
+									found = true
+								}
+							}
+
+						case "ses_send_volume":
+							region := rule.SESRegion
+							if region == "" {
+								region = getEnv("AWS_REGION", "us-east-1")
+							}
+							cacheVal, ok := sesCache.Load(region)
+							if !ok {
+								continue
+							}
+							sentry := cacheVal.(*sesCacheEntry)
+							sentry.mu.RLock()
+							sdata := sentry.Data
+							sentry.mu.RUnlock()
+							if sdata == nil {
+								continue
+							}
+							metricValue = float64(sdata.Sends)
+							metricLabel = "ses_send_volume"
+							found = true
+
+						case "ses_bounce_count":
+							region := rule.SESRegion
+							if region == "" {
+								region = getEnv("AWS_REGION", "us-east-1")
+							}
+							cacheVal, ok := sesCache.Load(region)
+							if !ok {
+								continue
+							}
+							sentry := cacheVal.(*sesCacheEntry)
+							sentry.mu.RLock()
+							sdata := sentry.Data
+							sentry.mu.RUnlock()
+							if sdata == nil {
+								continue
+							}
+							metricValue = float64(sdata.Bounces)
+							metricLabel = "ses_bounce_count"
+							found = true
+
+						case "ses_complaint_count":
+							region := rule.SESRegion
+							if region == "" {
+								region = getEnv("AWS_REGION", "us-east-1")
+							}
+							cacheVal, ok := sesCache.Load(region)
+							if !ok {
+								continue
+							}
+							sentry := cacheVal.(*sesCacheEntry)
+							sentry.mu.RLock()
+							sdata := sentry.Data
+							sentry.mu.RUnlock()
+							if sdata == nil {
+								continue
+							}
+							metricValue = float64(sdata.Complaints)
+							metricLabel = "ses_complaint_count"
+							found = true
+						}
+
+						if !found {
+							continue
+						}
+
+						// Check condition
+						triggered := false
+						switch rule.ConditionType {
+						case "greater_than":
+							triggered = metricValue > rule.Threshold
+						case "less_than":
+							triggered = metricValue < rule.Threshold
+						}
+
+						if !triggered {
+							// Condition not met — clear episode state so zero-cooldown rules can re-arm
+							if rule.CooldownSeconds <= 0 {
+								triggerKey := fmt.Sprintf("%d:%d", t.ID, rule.ID)
+								triggeredRules.Delete(triggerKey)
+							}
+							continue
+						}
+
+						if alertRuleInCooldown(rule.LastTriggeredAt, rule.CooldownSeconds) {
+							continue
+						}
+
+						// Zero-cooldown rules fire once per breach episode until condition clears
+						if rule.CooldownSeconds <= 0 {
+							triggerKey := fmt.Sprintf("%d:%d", t.ID, rule.ID)
+							if _, alreadyFired := triggeredRules.LoadOrStore(triggerKey, true); alreadyFired {
+								continue
+							}
+						}
+
+						// Send notification via NotifyHub
+						if t.NotifyHubURL == "" || t.NotifyHubAPIKey == "" {
+							log.Printf("WARN: tenant %d has no NotifyHub config, cannot send alert", t.ID)
+							continue
+						}
+
+						// Use custom message template if available
+						bodyMsg := fmt.Sprintf("Alert %q triggered: %s is %.2f (threshold: %s %.2f)", rule.Name, metricLabel, metricValue, rule.ConditionType, rule.Threshold)
+						if rule.MessageTemplate != "" {
+							bodyMsg = rule.MessageTemplate
+							bodyMsg = strings.ReplaceAll(bodyMsg, "{{rule_name}}", rule.Name)
+							bodyMsg = strings.ReplaceAll(bodyMsg, "{{metric_type}}", rule.MetricType)
+							bodyMsg = strings.ReplaceAll(bodyMsg, "{{metric_label}}", metricLabel)
+							bodyMsg = strings.ReplaceAll(bodyMsg, "{{metric_value}}", fmt.Sprintf("%.2f", metricValue))
+							bodyMsg = strings.ReplaceAll(bodyMsg, "{{condition_type}}", rule.ConditionType)
+							bodyMsg = strings.ReplaceAll(bodyMsg, "{{threshold}}", fmt.Sprintf("%.2f", rule.Threshold))
+							bodyMsg = strings.ReplaceAll(bodyMsg, "{{tenant_id}}", fmt.Sprintf("%d", t.ID))
+							bodyMsg = strings.ReplaceAll(bodyMsg, "{{alert_name}}", rule.Name)
+
+							// Add {{dashboard_info}} from cached dashboard data
+							if data != nil {
+								var dashLines []string
+								dashLines = append(dashLines, fmt.Sprintf("Domain: %s", data.DomainName))
+								dashLines = append(dashLines, fmt.Sprintf("Period (30min): Success= %s | Failure= %s | Volume= %d", data.Rates30min.SuccessPct, data.Rates30min.FailurePct, data.Rates30min.Total))
+								dashLines = append(dashLines, fmt.Sprintf("Period (1hr):   Success= %s | Failure= %s | Volume= %d", data.Rates1hr.SuccessPct, data.Rates1hr.FailurePct, data.Rates1hr.Total))
+								dashLines = append(dashLines, fmt.Sprintf("Period (1d):    Success= %s | Failure= %s | Volume= %d", data.Rates1d.SuccessPct, data.Rates1d.FailurePct, data.Rates1d.Total))
+								dashLines = append(dashLines, fmt.Sprintf("Period (7d):    Success= %s | Failure= %s | Volume= %d", data.Rates7d.SuccessPct, data.Rates7d.FailurePct, data.Rates7d.Total))
+								dashLines = append(dashLines, fmt.Sprintf("Period (30d):   Success= %s | Failure= %s | Volume= %d", data.Rates30d.SuccessPct, data.Rates30d.FailurePct, data.Rates30d.Total))
+								bodyMsg = strings.ReplaceAll(bodyMsg, "{{dashboard_info}}", strings.Join(dashLines, "\n"))
+							} else {
+								bodyMsg = strings.ReplaceAll(bodyMsg, "{{dashboard_info}}", "")
+							}
+
+							// Add SES-specific template variables for SES-related rules
+							bodyMsg = strings.ReplaceAll(bodyMsg, "{{ses_region}}", rule.SESRegion)
+							if strings.HasPrefix(rule.MetricType, "ses_") {
+								region := rule.SESRegion
+								if region == "" {
+									region = getEnv("AWS_REGION", "us-east-1")
+								}
+								bodyMsg = strings.ReplaceAll(bodyMsg, "{{ses_region}}", region)
+								if cacheVal, ok := sesCache.Load(region); ok {
+									sentry := cacheVal.(*sesCacheEntry)
+									sentry.mu.RLock()
+									sdata := sentry.Data
+									sentry.mu.RUnlock()
+									if sdata != nil {
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{total_sends}}", fmt.Sprintf("%d", sdata.Sends))
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{bounces}}", fmt.Sprintf("%d", sdata.Bounces))
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{complaints}}", fmt.Sprintf("%d", sdata.Complaints))
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{rejects}}", fmt.Sprintf("%d", sdata.Rejects))
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{bounce_rate}}", sdata.BounceRate)
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{complaint_rate}}", sdata.ComplaintRate)
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{error_rate}}", sdata.ErrorRate)
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{permanent_bounces}}", fmt.Sprintf("%d", sdata.PermanentBounces))
+										bodyMsg = strings.ReplaceAll(bodyMsg, "{{transient_bounces}}", fmt.Sprintf("%d", sdata.TransientBounces))
+									}
 								}
 							}
 						}
-					}
 
-					notifyPayload := map[string]interface{}{
-						"idempotency_key": newUUIDv4(),
-						"type":            "alert",
-						"channels":        []string{rule.NotificationChannel},
-						"subject":         fmt.Sprintf("[ALERT] %s - %s %.2f", rule.Name, rule.ConditionType, rule.Threshold),
-						"body":            bodyMsg,
-						"recipient":       rule.NotificationTarget,
-					}
-					if rule.NotifyHubTemplateID != "" {
-						notifyPayload["template_id"] = rule.NotifyHubTemplateID
-					}
-					if rule.NotificationChannel == "slack" && rule.NotificationTarget != "" {
-						notifyPayload["slack_channel"] = rule.NotificationTarget
-					}
-					notifyPayload["template_variables"] = map[string]string{
-						"rule_name":      rule.Name,
-						"rule_id":        fmt.Sprintf("%d", rule.ID),
-						"tile_id":        rule.TileID,
-						"metric_type":    rule.MetricType,
-						"metric_value":   fmt.Sprintf("%.2f", metricValue),
-						"condition_type": rule.ConditionType,
-						"threshold":      fmt.Sprintf("%.2f", rule.Threshold),
-					}
-
-					payloadBytes, err := json.Marshal(notifyPayload)
-					if err != nil {
-						log.Printf("ERROR: alert eval: marshal payload: %v", err)
-						continue
-					}
-
-					// Use only the scheme+host from NotifyHubURL (strip any existing path)
-					// to avoid duplicate path segments when appending /v1/...
-					parsedBase, err := url.Parse(t.NotifyHubURL)
-					if err != nil {
-						log.Printf("ERROR: alert eval: parse notifyhub URL %q: %v", t.NotifyHubURL, err)
-						continue
-					}
-					stripped := &url.URL{Scheme: parsedBase.Scheme, Host: parsedBase.Host}
-					notifyURL := stripped.JoinPath("/v1/notifications").String()
-					httpReq, err := http.NewRequest(http.MethodPost, notifyURL, bytes.NewReader(payloadBytes))
-					if err != nil {
-						log.Printf("ERROR: alert eval: create request: %v", err)
-						continue
-					}
-					httpReq.Header.Set("Content-Type", "application/json")
-					httpReq.Header.Set("X-API-Key", t.NotifyHubAPIKey)
-
-					client := &http.Client{Timeout: 15 * time.Second}
-					resp, err := client.Do(httpReq)
-					status := "sent"
-					errMsg := ""
-					if err != nil {
-						status = "failed"
-						errMsg = err.Error()
-					} else {
-						if resp.StatusCode >= 400 {
-							status = "failed"
-							respBody, _ := io.ReadAll(resp.Body)
-							errMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+						notifyPayload := map[string]interface{}{
+							"idempotency_key": newUUIDv4(),
+							"type":            "alert",
+							"channels":        []string{rule.NotificationChannel},
+							"subject":         fmt.Sprintf("[ALERT] %s - %s %.2f", rule.Name, rule.ConditionType, rule.Threshold),
+							"body":            bodyMsg,
+							"recipient":       rule.NotificationTarget,
 						}
-						resp.Body.Close()
-					}
+						if rule.NotifyHubTemplateID != "" {
+							notifyPayload["template_id"] = rule.NotifyHubTemplateID
+						}
+						if rule.NotificationChannel == "slack" && rule.NotificationTarget != "" {
+							notifyPayload["slack_channel"] = rule.NotificationTarget
+						}
+						notifyPayload["template_variables"] = map[string]string{
+							"rule_name":      rule.Name,
+							"rule_id":        fmt.Sprintf("%d", rule.ID),
+							"tile_id":        rule.TileID,
+							"metric_type":    rule.MetricType,
+							"metric_value":   fmt.Sprintf("%.2f", metricValue),
+							"condition_type": rule.ConditionType,
+							"threshold":      fmt.Sprintf("%.2f", rule.Threshold),
+						}
 
-					// Record alert history
-					now := time.Now()
-					db.Exec(`
+						payloadBytes, err := json.Marshal(notifyPayload)
+						if err != nil {
+							log.Printf("ERROR: alert eval: marshal payload: %v", err)
+							continue
+						}
+
+						// Use only the scheme+host from NotifyHubURL (strip any existing path)
+						// to avoid duplicate path segments when appending /v1/...
+						parsedBase, err := url.Parse(t.NotifyHubURL)
+						if err != nil {
+							log.Printf("ERROR: alert eval: parse notifyhub URL %q: %v", t.NotifyHubURL, err)
+							continue
+						}
+						stripped := &url.URL{Scheme: parsedBase.Scheme, Host: parsedBase.Host}
+						notifyURL := stripped.JoinPath("/v1/notifications").String()
+						httpReq, err := http.NewRequest(http.MethodPost, notifyURL, bytes.NewReader(payloadBytes))
+						if err != nil {
+							log.Printf("ERROR: alert eval: create request: %v", err)
+							continue
+						}
+						httpReq.Header.Set("Content-Type", "application/json")
+						httpReq.Header.Set("X-API-Key", t.NotifyHubAPIKey)
+
+						client := &http.Client{Timeout: 15 * time.Second}
+						resp, err := client.Do(httpReq)
+						status := "sent"
+						errMsg := ""
+						if err != nil {
+							status = "failed"
+							errMsg = err.Error()
+						} else {
+							if resp.StatusCode >= 400 {
+								status = "failed"
+								respBody, _ := io.ReadAll(resp.Body)
+								errMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+							}
+							resp.Body.Close()
+						}
+
+						// Record alert history
+						now := time.Now()
+						db.Exec(`
                         INSERT INTO alert_history (tenant_id, alert_rule_id, tile_id, metric_type,
                             metric_value, threshold, condition_type, channel, recipient, status, error_message, sent_at)
                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-						t.ID, rule.ID, rule.TileID, rule.MetricType, metricValue, rule.Threshold,
-						rule.ConditionType, rule.NotificationChannel, rule.NotificationTarget,
-						status, errMsg, now)
+							t.ID, rule.ID, rule.TileID, rule.MetricType, metricValue, rule.Threshold,
+							rule.ConditionType, rule.NotificationChannel, rule.NotificationTarget,
+							status, errMsg, now)
 
-					// Update last_triggered_at
-					db.Exec(`UPDATE alert_rules SET last_triggered_at = $1 WHERE id = $2`, now, rule.ID)
+						// Update last_triggered_at
+						db.Exec(`UPDATE alert_rules SET last_triggered_at = $1 WHERE id = $2`, now, rule.ID)
 
-					// ─── Codefac Pipeline Evaluation ────────────────
-					if rule.NotificationChannel == "webhook" {
-						pipelineRows, err := db.Query(`
+						// ─── Codefac Pipeline Evaluation ────────────────
+						if rule.NotificationChannel == "webhook" {
+							pipelineRows, err := db.Query(`
 							SELECT id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
 								payload_template, cooldown_seconds, enabled, last_triggered_at
 							FROM codefac_pipelines WHERE tenant_id = $1 AND enabled = true
 							AND metric_type = $2 AND condition_type = $3`, t.ID, rule.MetricType, rule.ConditionType)
-						if err == nil {
-							for pipelineRows.Next() {
-								var pipe CodefacPipeline
-								if err := pipelineRows.Scan(&pipe.ID, &pipe.TenantID, &pipe.Name, &pipe.PipelineName,
-									&pipe.MetricType, &pipe.ConditionType, &pipe.Threshold,
-									&pipe.PayloadTemplate, &pipe.CooldownSeconds, &pipe.Enabled, &pipe.LastTriggeredAt); err != nil {
-									continue
-								}
-								// Check threshold matches
-								var conditionMet bool
-								switch pipe.ConditionType {
-								case "greater_than":
-									conditionMet = metricValue > pipe.Threshold
-								case "less_than":
-									conditionMet = metricValue < pipe.Threshold
-								}
-								if !conditionMet {
-									if pipe.CooldownSeconds <= 0 {
-										pipeKey := fmt.Sprintf("%d:%d:%d", t.ID, rule.ID, pipe.ID)
-										triggeredRules.Delete(pipeKey)
-									}
-									continue
-								}
-								if alertRuleInCooldown(pipe.LastTriggeredAt, pipe.CooldownSeconds) {
-									continue
-								}
-								if pipe.CooldownSeconds <= 0 {
-									pipeKey := fmt.Sprintf("%d:%d:%d", t.ID, rule.ID, pipe.ID)
-									if _, pipeFired := triggeredRules.LoadOrStore(pipeKey, true); pipeFired {
+							if err == nil {
+								for pipelineRows.Next() {
+									var pipe CodefacPipeline
+									if err := pipelineRows.Scan(&pipe.ID, &pipe.TenantID, &pipe.Name, &pipe.PipelineName,
+										&pipe.MetricType, &pipe.ConditionType, &pipe.Threshold,
+										&pipe.PayloadTemplate, &pipe.CooldownSeconds, &pipe.Enabled, &pipe.LastTriggeredAt); err != nil {
 										continue
 									}
-								}
-
-								// Build payload from template with variable substitution
-								payloadStr := pipe.PayloadTemplate
-								payloadStr = strings.ReplaceAll(payloadStr, "{{rule_name}}", rule.Name)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{metric_type}}", rule.MetricType)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{metric_value}}", fmt.Sprintf("%.2f", metricValue))
-								payloadStr = strings.ReplaceAll(payloadStr, "{{metric_label}}", metricLabel)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{condition_type}}", rule.ConditionType)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{threshold}}", fmt.Sprintf("%.2f", pipe.Threshold))
-								payloadStr = strings.ReplaceAll(payloadStr, "{{tenant_id}}", fmt.Sprintf("%d", t.ID))
-								payloadStr = strings.ReplaceAll(payloadStr, "{{pipeline_name}}", pipe.Name)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{alert_name}}", rule.Name)
-								payloadStr = strings.ReplaceAll(payloadStr, "{{idempotency_key}}", newUUIDv4())
-
-								// Send via NotifyHub (which handles headers/delivery)
-								notifyPayload := map[string]interface{}{
-									"idempotency_key": newUUIDv4(),
-									"type":            "alert",
-									"channels":        []string{"webhook"},
-									"forced_vendor":   "codefac",
-									"subject":         fmt.Sprintf("[PIPELINE] %s", pipe.Name),
-									"body":            payloadStr,
-									"recipient":       pipe.PipelineName,
-								}
-								notifyPayload["template_variables"] = map[string]string{
-									"pipeline_name":  pipe.Name,
-									"rule_name":      rule.Name,
-									"metric_type":    rule.MetricType,
-									"metric_value":   fmt.Sprintf("%.2f", metricValue),
-									"condition_type": rule.ConditionType,
-									"threshold":      fmt.Sprintf("%.2f", pipe.Threshold),
-								}
-
-								payloadBytes, _ := json.Marshal(notifyPayload)
-								parsedBase, _ := url.Parse(t.NotifyHubURL)
-								stripped := &url.URL{Scheme: parsedBase.Scheme, Host: parsedBase.Host}
-								notifyURL := stripped.JoinPath("/v1/notifications").String()
-								httpReq, _ := http.NewRequest(http.MethodPost, notifyURL, bytes.NewReader(payloadBytes))
-								httpReq.Header.Set("Content-Type", "application/json")
-								httpReq.Header.Set("X-API-Key", t.NotifyHubAPIKey)
-
-								client := &http.Client{Timeout: 15 * time.Second}
-								resp, err := client.Do(httpReq)
-								pipeStatus := "sent"
-								pipeErrMsg := ""
-								if err != nil {
-									pipeStatus = "failed"
-									pipeErrMsg = err.Error()
-								} else {
-									if resp.StatusCode >= 400 {
-										pipeStatus = "failed"
-										respBody, _ := io.ReadAll(resp.Body)
-										pipeErrMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+									// Check threshold matches
+									var conditionMet bool
+									switch pipe.ConditionType {
+									case "greater_than":
+										conditionMet = metricValue > pipe.Threshold
+									case "less_than":
+										conditionMet = metricValue < pipe.Threshold
 									}
-									resp.Body.Close()
-								}
+									if !conditionMet {
+										if pipe.CooldownSeconds <= 0 {
+											pipeKey := fmt.Sprintf("%d:%d:%d", t.ID, rule.ID, pipe.ID)
+											triggeredRules.Delete(pipeKey)
+										}
+										continue
+									}
+									if alertRuleInCooldown(pipe.LastTriggeredAt, pipe.CooldownSeconds) {
+										continue
+									}
+									if pipe.CooldownSeconds <= 0 {
+										pipeKey := fmt.Sprintf("%d:%d:%d", t.ID, rule.ID, pipe.ID)
+										if _, pipeFired := triggeredRules.LoadOrStore(pipeKey, true); pipeFired {
+											continue
+										}
+									}
 
-								// Record in alert_history
-								now := time.Now()
-								db.Exec(`
+									// Build payload from template with variable substitution
+									payloadStr := pipe.PayloadTemplate
+									payloadStr = strings.ReplaceAll(payloadStr, "{{rule_name}}", rule.Name)
+									payloadStr = strings.ReplaceAll(payloadStr, "{{metric_type}}", rule.MetricType)
+									payloadStr = strings.ReplaceAll(payloadStr, "{{metric_value}}", fmt.Sprintf("%.2f", metricValue))
+									payloadStr = strings.ReplaceAll(payloadStr, "{{metric_label}}", metricLabel)
+									payloadStr = strings.ReplaceAll(payloadStr, "{{condition_type}}", rule.ConditionType)
+									payloadStr = strings.ReplaceAll(payloadStr, "{{threshold}}", fmt.Sprintf("%.2f", pipe.Threshold))
+									payloadStr = strings.ReplaceAll(payloadStr, "{{tenant_id}}", fmt.Sprintf("%d", t.ID))
+									payloadStr = strings.ReplaceAll(payloadStr, "{{pipeline_name}}", pipe.Name)
+									payloadStr = strings.ReplaceAll(payloadStr, "{{alert_name}}", rule.Name)
+									payloadStr = strings.ReplaceAll(payloadStr, "{{idempotency_key}}", newUUIDv4())
+
+									// Send via NotifyHub (which handles headers/delivery)
+									notifyPayload := map[string]interface{}{
+										"idempotency_key": newUUIDv4(),
+										"type":            "alert",
+										"channels":        []string{"webhook"},
+										"forced_vendor":   "codefac",
+										"subject":         fmt.Sprintf("[PIPELINE] %s", pipe.Name),
+										"body":            payloadStr,
+										"recipient":       pipe.PipelineName,
+									}
+									notifyPayload["template_variables"] = map[string]string{
+										"pipeline_name":  pipe.Name,
+										"rule_name":      rule.Name,
+										"metric_type":    rule.MetricType,
+										"metric_value":   fmt.Sprintf("%.2f", metricValue),
+										"condition_type": rule.ConditionType,
+										"threshold":      fmt.Sprintf("%.2f", pipe.Threshold),
+									}
+
+									payloadBytes, _ := json.Marshal(notifyPayload)
+									parsedBase, _ := url.Parse(t.NotifyHubURL)
+									stripped := &url.URL{Scheme: parsedBase.Scheme, Host: parsedBase.Host}
+									notifyURL := stripped.JoinPath("/v1/notifications").String()
+									httpReq, _ := http.NewRequest(http.MethodPost, notifyURL, bytes.NewReader(payloadBytes))
+									httpReq.Header.Set("Content-Type", "application/json")
+									httpReq.Header.Set("X-API-Key", t.NotifyHubAPIKey)
+
+									client := &http.Client{Timeout: 15 * time.Second}
+									resp, err := client.Do(httpReq)
+									pipeStatus := "sent"
+									pipeErrMsg := ""
+									if err != nil {
+										pipeStatus = "failed"
+										pipeErrMsg = err.Error()
+									} else {
+										if resp.StatusCode >= 400 {
+											pipeStatus = "failed"
+											respBody, _ := io.ReadAll(resp.Body)
+											pipeErrMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+										}
+										resp.Body.Close()
+									}
+
+									// Record in alert_history
+									now := time.Now()
+									db.Exec(`
 									INSERT INTO alert_history (tenant_id, alert_rule_id, tile_id, metric_type,
 										metric_value, threshold, condition_type, channel, recipient, status, error_message, sent_at, workflow_id, run_id)
 									VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-									t.ID, &pipe.ID, rule.TileID, rule.MetricType, metricValue, pipe.Threshold,
-									pipe.ConditionType, "pipeline", pipe.PipelineName, pipeStatus, pipeErrMsg, now, "", "")
+										t.ID, &pipe.ID, rule.TileID, rule.MetricType, metricValue, pipe.Threshold,
+										pipe.ConditionType, "pipeline", pipe.PipelineName, pipeStatus, pipeErrMsg, now, "", "")
 
-								// Update last_triggered_at
-								db.Exec(`UPDATE codefac_pipelines SET last_triggered_at = $1 WHERE id = $2`, now, pipe.ID)
+									// Update last_triggered_at
+									db.Exec(`UPDATE codefac_pipelines SET last_triggered_at = $1 WHERE id = $2`, now, pipe.ID)
 
-								log.Printf("CODEFAC PIPELINE: tenant %d pipeline %q triggered (%.2f %s %.2f) -> %s",
-									t.ID, pipe.Name, metricValue, pipe.ConditionType, pipe.Threshold, pipeStatus)
+									log.Printf("CODEFAC PIPELINE: tenant %d pipeline %q triggered (%.2f %s %.2f) -> %s",
+										t.ID, pipe.Name, metricValue, pipe.ConditionType, pipe.Threshold, pipeStatus)
+								}
+								pipelineRows.Close()
 							}
-							pipelineRows.Close()
 						}
-					}
 
-					log.Printf("ALERT: tenant %d rule %q triggered (%.2f %s %.2f) -> %s", t.ID, rule.Name, metricValue, rule.ConditionType, rule.Threshold, status)
+						log.Printf("ALERT: tenant %d rule %q triggered (%.2f %s %.2f) -> %s", t.ID, rule.Name, metricValue, rule.ConditionType, rule.Threshold, status)
+					}
 				}
 
 				// ─── Workflow Failure Evaluation ─────────────────
-				// Check recent failed/timed out workflows and trigger matching pipelines
-				if len(data.RecentFailed) > 0 {
+				// Check recent failed/timed out workflows and trigger matching pipelines.
+				// Use stored workflow_failures as the source of truth so pipeline triggering
+				// does not depend on the dashboard cache path being populated first.
+				recentPipelineFailures, err := loadRecentStoredWorkflowFailures(ctx, t.ID, 20, time.Hour)
+				if err != nil {
+					log.Printf("WARN: workflow failure pipeline load tenant=%d: %v", t.ID, err)
+					recentPipelineFailures = nil
+				}
+				if len(recentPipelineFailures) > 0 {
 					pipeRows, err := db.Query(`
 						SELECT id, tenant_id, name, pipeline_name, metric_type, condition_type, threshold,
 							payload_template, cooldown_seconds, enabled, last_triggered_at
@@ -6991,11 +7789,45 @@ func startAlertEvaluator(ctx context.Context) {
 								&pipe.PayloadTemplate, &pipe.CooldownSeconds, &pipe.Enabled, &pipe.LastTriggeredAt); err != nil {
 								continue
 							}
-							for _, wf := range data.RecentFailed {
+							for _, wf := range recentPipelineFailures {
+								errorDetails := workflowFailureErrorDetails(ctx, t.ID, wf)
+								failureRow, err := upsertPipelineWorkflowFailure(ctx, t.ID, pipe, wf, errorDetails)
+								if err != nil {
+									log.Printf("WARN: pipeline workflow failure upsert tenant=%d pipeline=%d workflow=%s run=%s: %v", t.ID, pipe.ID, wf.WorkflowID, wf.RunID, err)
+									continue
+								}
+								if pipelineWorkflowFailureIsFinal(failureRow.Status) {
+									continue
+								}
 								if workflowAlertAlreadySent(pipe.ID, wf.WorkflowID, wf.RunID) {
+									if err := markPipelineWorkflowFailureFromHistory(ctx, failureRow); err != nil {
+										log.Printf("WARN: pipeline workflow failure backfill tenant=%d pipeline=%d workflow=%s run=%s: %v", t.ID, pipe.ID, wf.WorkflowID, wf.RunID, err)
+									}
 									continue
 								}
 								if alertRuleInCooldown(pipe.LastTriggeredAt, pipe.CooldownSeconds) {
+									if err := markPipelineWorkflowFailureCooldown(ctx, failureRow, pipe.LastTriggeredAt); err != nil {
+										log.Printf("WARN: pipeline workflow failure cooldown tenant=%d pipeline=%d workflow=%s run=%s: %v", t.ID, pipe.ID, wf.WorkflowID, wf.RunID, err)
+									}
+									continue
+								}
+								blockingRow, err := findBlockingPipelineWorkflowFailure(ctx, failureRow)
+								if err != nil {
+									log.Printf("WARN: pipeline workflow failure lookup tenant=%d pipeline=%d workflow=%s run=%s: %v", t.ID, pipe.ID, wf.WorkflowID, wf.RunID, err)
+									continue
+								}
+								if blockingRow != nil {
+									skipStatus := pipelineWorkflowFailureStatusSkippedDuplicate
+									if blockingRow.Status == pipelineWorkflowFailureStatusProcessing {
+										skipStatus = pipelineWorkflowFailureStatusSkippedInflight
+									}
+									if err := markPipelineWorkflowFailureSkipped(ctx, failureRow, skipStatus, blockingRow); err != nil {
+										log.Printf("WARN: pipeline workflow failure skip tenant=%d pipeline=%d workflow=%s run=%s: %v", t.ID, pipe.ID, wf.WorkflowID, wf.RunID, err)
+									}
+									continue
+								}
+								if err := markPipelineWorkflowFailureProcessing(ctx, failureRow, errorDetails); err != nil {
+									log.Printf("WARN: pipeline workflow failure processing tenant=%d pipeline=%d workflow=%s run=%s: %v", t.ID, pipe.ID, wf.WorkflowID, wf.RunID, err)
 									continue
 								}
 								payloadStr := applyCodefacWorkflowPayload(pipe.PayloadTemplate, pipe, &t, pipe.Name, wf)
@@ -7051,6 +7883,16 @@ func startAlertEvaluator(ctx context.Context) {
 									t.ID, pipe.ID, "recent-failures", "workflow_failure", 0, pipe.Threshold,
 									pipe.ConditionType, "pipeline", pipe.PipelineName, wfStatus, wfErrMsg, now, wf.WorkflowID, wf.RunID)
 
+								if wfStatus == "sent" {
+									if err := markPipelineWorkflowFailureTriggered(ctx, failureRow, now); err != nil {
+										log.Printf("WARN: pipeline workflow failure mark triggered tenant=%d pipeline=%d workflow=%s run=%s: %v", t.ID, pipe.ID, wf.WorkflowID, wf.RunID, err)
+									}
+								} else {
+									if err := markPipelineWorkflowFailureFailed(ctx, failureRow, wfErrMsg, now); err != nil {
+										log.Printf("WARN: pipeline workflow failure mark failed tenant=%d pipeline=%d workflow=%s run=%s: %v", t.ID, pipe.ID, wf.WorkflowID, wf.RunID, err)
+									}
+								}
+
 								db.Exec(`UPDATE codefac_pipelines SET last_triggered_at = $1 WHERE id = $2`, now, pipe.ID)
 								pipe.LastTriggeredAt = &now
 
@@ -7064,7 +7906,7 @@ func startAlertEvaluator(ctx context.Context) {
 					// ─── Alert Rule: Workflow Failure Evaluation ─────
 					// Evaluate alert_rules with forward type or workflow_failure metric.
 					// These rules trigger immediately on any workflow failure (no threshold/window).
-					if len(data.RecentFailed) > 0 {
+					if len(recentPipelineFailures) > 0 {
 						fwdRows, err := db.Query(`
 							SELECT id, tenant_id, name, enabled, metric_type, condition_type, threshold,
 								window_seconds, notification_channel, notification_target, notifyhub_template_id, message_template,
@@ -7082,7 +7924,7 @@ func startAlertEvaluator(ctx context.Context) {
 									continue
 								}
 
-								for _, wf := range data.RecentFailed {
+								for _, wf := range recentPipelineFailures {
 									if workflowAlertAlreadySent(fwdRule.ID, wf.WorkflowID, wf.RunID) {
 										continue
 									}
@@ -7824,6 +8666,11 @@ func main() {
 		log.Fatalf("Failed to ensure codefac_pipelines table: %v", err)
 	}
 	log.Printf("Codefac pipelines table ready")
+	if err := EnsurePipelineWorkflowFailuresTable(db); err != nil {
+		log.Fatalf("Failed to ensure pipeline_workflow_failures table: %v", err)
+	}
+	log.Printf("Pipeline workflow failures table ready")
+
 	if _, err := db.Exec(`ALTER TABLE codefac_pipelines ADD COLUMN IF NOT EXISTS cooldown_seconds INTEGER NOT NULL DEFAULT 300`); err != nil {
 		log.Printf("WARN: could not add cooldown_seconds column to codefac_pipelines: %v", err)
 	}
@@ -7914,6 +8761,7 @@ func main() {
 	http.HandleFunc("/api/alerts/rules/test", corsMiddleware(requirePermission("notifications")(alertsRulesTestHandler)))
 	http.HandleFunc("/api/codefac-pipelines", corsMiddleware(requirePermission("notifications")(codefacPipelinesHandler)))
 	http.HandleFunc("/api/codefac-pipelines/trigger", corsMiddleware(requirePermission("notifications")(codefacPipelineTriggerHandler)))
+	http.HandleFunc("/api/pipeline-requests", corsMiddleware(requirePermission("notifications")(pipelineWorkflowFailuresHandler)))
 	http.HandleFunc("/api/notification-channels", corsMiddleware(requirePermission("notifications")(notificationChannelsHandler)))
 	http.HandleFunc("/api/reports", corsMiddleware(requirePermission("report-history")(reportsHandler)))
 	http.HandleFunc("/api/reports/trigger", corsMiddleware(requirePermission("report-history")(reportTriggerHandler)))

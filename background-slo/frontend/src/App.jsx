@@ -8,6 +8,13 @@ import RecentFailuresPage from "./pages/RecentFailuresPage";
 import ActivityErrorsPage from "./pages/ActivityErrorsPage";
 import P100LatencyPage from "./pages/P100LatencyPage";
 import SesDashboardPage from "./pages/SesDashboardPage";
+import NotificationsPage from "./pages/NotificationsPage";
+import ReportHistoryPage from "./pages/ReportHistoryPage";
+import PipelineErrorsPage from "./pages/PipelineErrorsPage";
+import LoginPage from "./pages/LoginPage";
+import PeoplesPage from "./pages/PeoplesPage";
+import TenantsPage from "./pages/TenantsPage";
+import WelcomePage from "./pages/WelcomePage";
 
 // Route-to-permission mapping (must match Sidebar.jsx)
 const ROUTE_PERM = {
@@ -17,16 +24,11 @@ const ROUTE_PERM = {
   "/p100-latency": "p100-latency",
   "/ses": "ses",
   "/notifications": "notifications",
+  "/pipeline-requests": "notifications",
   "/report-history": "report-history",
   "/peoples": "peoples",
   "/admin/clients": "admin",
 };
-import NotificationsPage from "./pages/NotificationsPage";
-import ReportHistoryPage from "./pages/ReportHistoryPage";
-import LoginPage from "./pages/LoginPage";
-import PeoplesPage from "./pages/PeoplesPage";
-import TenantsPage from "./pages/TenantsPage";
-import WelcomePage from "./pages/WelcomePage";
 
 import "./App.css";
 
@@ -69,6 +71,12 @@ const PAGE_META = {
     description:
       "Configure notification channels, alert rules, and scheduled reports.",
   },
+  "/pipeline-requests": {
+    eyebrow: "Pages / Notifications",
+    title: "Pipeline Requests",
+    description:
+      "Review pipeline trigger requests, delivery status, and requests skipped because the same workflow type and error were already handled.",
+  },
   "/report-history": {
     eyebrow: "Pages / Reports",
     title: "Report & Pipeline History",
@@ -100,7 +108,11 @@ function isFailedTimeoutOnlyFilter(statuses) {
     statuses.length > 0 &&
     statuses.every((status) => {
       const normalized = normalizeActivityStatus(status);
-      return normalized === "failed" || normalized === "timeout" || normalized === "timedout";
+      return (
+        normalized === "failed" ||
+        normalized === "timeout" ||
+        normalized === "timedout"
+      );
     })
   );
 }
@@ -919,6 +931,14 @@ function AppContent() {
                   }
                 />
                 <Route
+                  path="/pipeline-requests"
+                  element={
+                    canAccess("/pipeline-requests") ? null : (
+                      <Navigate to="/" replace />
+                    )
+                  }
+                />
+                <Route
                   path="/report-history"
                   element={
                     canAccess("/report-history") ? null : (
@@ -967,6 +987,14 @@ function AppContent() {
               </div>
             )}
 
+          {location.pathname === "/pipeline-requests" &&
+            canAccess("/pipeline-requests") &&
+            !showWelcome && (
+              <div className="app-content">
+                <PipelineErrorsPage selectedTenantId={selectedTenantId} />
+              </div>
+            )}
+
           {location.pathname === "/report-history" &&
             canAccess("/report-history") &&
             !showWelcome && (
@@ -1000,6 +1028,7 @@ function AppContent() {
             selectedTenantId &&
             location.pathname !== "/ses" &&
             location.pathname !== "/notifications" &&
+            location.pathname !== "/pipeline-requests" &&
             location.pathname !== "/report-history" &&
             location.pathname !== "/peoples" &&
             location.pathname !== "/admin/clients" && (
@@ -1025,6 +1054,7 @@ function AppContent() {
             !error &&
             location.pathname !== "/ses" &&
             location.pathname !== "/notifications" &&
+            location.pathname !== "/pipeline-requests" &&
             location.pathname !== "/report-history" &&
             location.pathname !== "/peoples" &&
             location.pathname !== "/admin/clients" && (
