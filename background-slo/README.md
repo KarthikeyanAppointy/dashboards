@@ -2,6 +2,10 @@
 
 A multi-tenant monitoring dashboard for Cadence/Temporal workflow rates, success/failure metrics, and tasklist latency. Built with a **Go** backend and **React** frontend, streaming data from **Elasticsearch** every 5 seconds.
 
+For a zero-context local setup guide, start with the runbook:
+
+- [Local Setup Runbook](docs/local-setup-runbook.md)
+
 ---
 
 ## Architecture
@@ -9,7 +13,7 @@ A multi-tenant monitoring dashboard for Cadence/Temporal workflow rates, success
 ```
 ┌──────────────┐     ┌──────────────┐     ┌─────────────────┐
 │   React UI   │────▶│  Go Backend  │────▶│  Elasticsearch  │
-│  (port 5173) │     │  (port 8080) │     │  (per tenant)   │
+│  (port 5173) │     │  (port 8081) │     │  (per tenant)   │
 └──────────────┘     └──────┬───────┘     └─────────────────┘
                             │
                             ├──────────────────────────────────┐
@@ -43,7 +47,7 @@ A multi-tenant monitoring dashboard for Cadence/Temporal workflow rates, success
 ### 1. Start PostgreSQL
 
 ```bash
-cd /Users/spidey/saastack/internal-scripts/slo_dashboard
+cd background-slo
 docker compose up -d
 ```
 
@@ -52,32 +56,85 @@ This starts PostgreSQL 16 on port 5432 with database `slo_dashboard` (user: `pos
 ### 2. Start the Go Backend
 
 ```bash
-cd /Users/spidey/saastack/internal-scripts/slo_dashboard/backend
+cd background-slo/backend
 
-# Seed a default tenant and start
-DEFAULT_TENANT_NAME="qa-mathnasium" \
-DEFAULT_DOMAIN_ID="e8e74cad-6971-4a5d-8752-e2477531ab68" \
-DEFAULT_DOMAIN_NAME="qa-mathnasium" \
-DEFAULT_ES="http://localhost:9000" \
-AWS_REGION="us-east-1" \
-SES_REGIONS="us-east-1,us-west-2,eu-west-1,eu-central-1,ap-southeast-1,ap-northeast-1,sa-east-1" \
-SES_DOMAIN_NAME="ses" \
-AWS_ACCESS_KEY_ID="your-access-key" \
-AWS_SECRET_ACCESS_KEY="your-secret-key" \
-GOOGLE_CLIENT_ID="your-google-client-id.apps.googleusercontent.com" \
+export DATABASE_URL="postgres://postgres:postgres@127.0.0.1:5432/slo_dashboard?sslmode=disable"
+export PORT="8081"
+export GOOGLE_CLIENT_ID="your-google-client-id.apps.googleusercontent.com"
+export APPONTY_ONLY_LOGIN="false"
+export ADMIN_KEY="local-admin-key"
+
 go run main.go
 ```
 
-The backend starts on `http://localhost:8080`.
+The backend starts on `http://localhost:8081`.
+
+Use environment variables here only for app-wide backend settings such as:
+- database connection
+- backend port
+- Google token audience validation
+- one-time admin bootstrap key
+
+You do not need `DEFAULT_TENANT_NAME`, `DEFAULT_DOMAIN_ID`, `DEFAULT_DOMAIN_NAME`, `DEFAULT_ES`, or `DEFAULT_INDEX` to start `main.go` for normal local development.
+
+Do not use backend env vars for normal tenant/client configuration. Tenant fields such as domain, Elasticsearch endpoint, index, and Cadence Web URL should be created and edited from the **Clients** page in the UI.
 
 ### 3. Start the React Frontend
 
 ```bash
-cd /Users/spidey/saastack/internal-scripts/slo_dashboard/frontend
+cd background-slo/frontend
+export VITE_GOOGLE_CLIENT_ID="your-google-client-id.apps.googleusercontent.com"
+export VITE_APPONTY_ONLY_LOGIN="false"
 npm run dev
 ```
 
 Open **http://localhost:5173** in your browser.
+
+### 4. Sign In
+
+Open the app and sign in with Google using the same account you want to make admin.
+
+### 5. Bootstrap the First Admin
+
+After signing in once, bootstrap the first admin from another terminal:
+
+```bash
+curl -X POST http://localhost:8081/api/rbac/setup-admin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "admin_key": "local-admin-key",
+    "user_email": "your-email@example.com"
+  }'
+```
+
+Important:
+- `user_email` must be the same account that already signed in to the UI
+- `admin_key` must match the backend `ADMIN_KEY`
+- this is a one-time bootstrap path for the first admin
+
+### 6. Create a Client from the UI
+
+After the admin bootstrap succeeds:
+- refresh the UI if needed
+- open **Clients**
+- click **Add Client**
+- enter the tenant-specific values there
+
+By default, the **ES Endpoint** field uses:
+
+```text
+http://localhost:9000
+```
+
+This is the recommended place to configure:
+- client name
+- domain ID
+- domain name
+- Elasticsearch endpoint
+- Elasticsearch index
+- audience URL
+- NotifyHub settings
+- Cadence Web URL
 
 ---
 
@@ -87,22 +144,25 @@ Open **http://localhost:5173** in your browser.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/slo_dashboard?sslmode=disable` | PostgreSQL connection string |
-| `PORT` | `8080` | HTTP listen port |
-| `DEFAULT_TENANT_NAME` | `Default` | Name for auto-seeded default tenant |
-| `DEFAULT_DOMAIN_ID` | (empty) | Domain UUID for auto-seeded tenant |
-| `DEFAULT_DOMAIN_NAME` | `unknown` | Domain display name |
-| `DEFAULT_ES` | `http://localhost:9000` | ES endpoint for auto-seeded tenant |
-| `DEFAULT_INDEX` | `cadence-visibility` | ES index for auto-seeded tenant |
+| `DATABASE_URL` | `postgres://postgres:postgres@127.0.0.1:5432/slo_dashboard?sslmode=disable` | PostgreSQL connection string |
+| `PORT` | `8081` | HTTP listen port |
 | `GOOGLE_CLIENT_ID` | _(empty)_ | Google OAuth client ID for token audience verification (skips check if empty) |
+| `APPONTY_ONLY_LOGIN` | `true` | Restrict sign-in to `@appointy.com` users unless set to `false` |
+| `ADMIN_KEY` | _(empty)_ | One-time first-admin bootstrap key used by `POST /api/rbac/setup-admin` |
 | `AWS_REGION` | `us-east-1` | AWS region for CloudWatch SES metric queries |
 | `SES_REGIONS` | _(single region from `AWS_REGION`)_ | Comma-separated list of AWS regions for the SES region dropdown (e.g. `us-east-1,us-west-2,eu-west-1`) |
 | `SES_CONFIG_SET_NAME` | _(empty)_ | Optional SES configuration set name to filter metrics by |
 | `SES_DOMAIN_NAME` | `ses` | Display name shown in the SES dashboard header |
+| `DEFAULT_TENANT_NAME` | `Default` | Optional bootstrap tenant name when the DB has no tenants |
+| `DEFAULT_DOMAIN_ID` | (empty) | Optional bootstrap domain UUID |
+| `DEFAULT_DOMAIN_NAME` | `unknown` | Optional bootstrap domain display name |
+| `DEFAULT_ES` | `http://localhost:9000` | Optional bootstrap ES endpoint |
+| `DEFAULT_INDEX` | `cadence-visibility` | Optional bootstrap ES index |
+| `DEFAULT_CADENCE_WEB_URL` | _(empty)_ | Optional bootstrap Cadence Web URL |
 
 > **Note:** AWS credentials are resolved using the standard AWS SDK credential chain (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables, shared credentials file, or IAM roles when running on EC2/ECS).
 >
-> **Note:** If the `tenants` table is empty on startup, the backend auto-creates a default tenant using the `DEFAULT_*` env vars. If tenants already exist, it uses those instead.
+> **Note:** The `DEFAULT_*` variables are only for optional bootstrap behavior when the database has no tenants yet. In normal usage, create and manage tenant/client configuration from the **Clients** page.
 
 ---
 
@@ -111,7 +171,7 @@ Open **http://localhost:5173** in your browser.
 ### Health Check
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:8081/health
 ```
 
 Response:
@@ -122,7 +182,7 @@ Response:
 ### List Tenants
 
 ```bash
-curl http://localhost:8080/api/tenants
+curl http://localhost:8081/api/tenants
 ```
 
 Response:
@@ -144,7 +204,7 @@ Response:
 ### Add a Tenant
 
 ```bash
-curl -X POST http://localhost:8080/api/tenants \
+curl -X POST http://localhost:8081/api/tenants \
   -H "Content-Type: application/json" \
   -d '{
     "name": "appointyx-prod",
@@ -182,7 +242,7 @@ Response (201 Created):
 ### Delete a Tenant
 
 ```bash
-curl -X DELETE "http://localhost:8080/api/tenants/delete?id=2"
+curl -X DELETE "http://localhost:8081/api/tenants/delete?id=2"
 ```
 
 Response:
@@ -194,13 +254,13 @@ Response:
 
 ```bash
 # Get SES metrics for the last 7 days (default)
-curl "http://localhost:8080/api/ses-metrics"
+curl "http://localhost:8081/api/ses-metrics"
 
 # Get SES metrics for the last 30 days
-curl "http://localhost:8080/api/ses-metrics?days=30"
+curl "http://localhost:8081/api/ses-metrics?days=30"
 
 # Get SES metrics for a custom time range (Unix timestamps)
-curl "http://localhost:8080/api/ses-metrics?start_time=1712880000&end_time=1715472000"
+curl "http://localhost:8081/api/ses-metrics?start_time=1712880000&end_time=1715472000"
 ```
 
 **Query Parameters:**
@@ -239,7 +299,7 @@ curl "http://localhost:8080/api/ses-metrics?start_time=1712880000&end_time=17154
 ### Get Available SES Regions
 
 ```bash
-curl "http://localhost:8080/api/ses-regions"
+curl "http://localhost:8081/api/ses-regions"
 ```
 
 **Response:**
@@ -253,16 +313,16 @@ curl "http://localhost:8080/api/ses-regions"
 
 ```bash
 # Get data for a specific tenant
-curl "http://localhost:8080/api/workflows?tenant_id=1"
+curl "http://localhost:8081/api/workflows?tenant_id=1"
 
 # With custom limit for recent failures
-curl "http://localhost:8080/api/workflows?tenant_id=1&limit=100"
+curl "http://localhost:8081/api/workflows?tenant_id=1&limit=100"
 
 # With custom tasklist latency window (in seconds)
-curl "http://localhost:8080/api/workflows?tenant_id=1&limit=50&tasklist_window=10800"
+curl "http://localhost:8081/api/workflows?tenant_id=1&limit=50&tasklist_window=10800"
 
 # All params together
-curl "http://localhost:8080/api/workflows?tenant_id=1&limit=500&tasklist_window=86400"
+curl "http://localhost:8081/api/workflows?tenant_id=1&limit=500&tasklist_window=86400"
 ```
 
 **Query Parameters:**

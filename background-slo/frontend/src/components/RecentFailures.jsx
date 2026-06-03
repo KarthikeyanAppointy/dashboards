@@ -5,6 +5,45 @@ import "./RecentFailures.css";
 
 const STATUS_OPTIONS = ["Failed", "TimedOut"];
 
+function recentFailureKey(workflowId, runId) {
+  return `${workflowId || ""}::${runId || ""}`;
+}
+
+function pipelineStatusMeta(status) {
+  switch (status) {
+    case "triggered":
+    case "sent":
+      return {
+        icon: "✓",
+        color: "var(--success)",
+        title: "Pipeline triggered successfully",
+      };
+    case "skipped_duplicate":
+    case "skipped_cooldown":
+    case "skipped_inflight":
+      return {
+        icon: "↷",
+        color: "var(--warning-fg)",
+        title: "Pipeline request skipped",
+      };
+    case "trigger_failed":
+    case "failed":
+      return {
+        icon: "✕",
+        color: "var(--danger)",
+        title: "Pipeline trigger failed",
+      };
+    case "processing":
+      return {
+        icon: "…",
+        color: "var(--fg-secondary)",
+        title: "Pipeline request in progress",
+      };
+    default:
+      return null;
+  }
+}
+
 function getStatusClass(status) {
   if (status === "Failed" || status === "failed") return "status-failed";
   if (status === "TimedOut" || status === "timed_out" || status === "Timed Out")
@@ -244,6 +283,11 @@ function RecentFailures({
   );
   const [triggering, setTriggering] = useState({});
   const [triggeredMap, setTriggeredMap] = useState({});
+  const extraPipelineColumns =
+    codefacPipelines && codefacPipelines.length > 0 && notificationsEnabled
+      ? 3
+      : 0;
+  const emptyColSpan = 6 + extraPipelineColumns;
 
   const filteredFailures = (failures || []).filter((f) => {
     const statusMatch =
@@ -269,36 +313,66 @@ function RecentFailures({
     }
   }, [codefacPipelines]);
 
-  // Fetch pipeline trigger history to populate Triggered/Last Pipeline columns
+  // Fetch pipeline request history to populate Triggered/Last Pipeline columns
   useEffect(() => {
     if (!selectedTenantId) return;
     let cancelled = false;
     const fetchHistory = async () => {
       try {
-        const res = await authFetch(
-          `/api/alerts/history?tenant_id=${selectedTenantId}&limit=200`,
-        );
-        if (!res.ok) return;
-        const json = await res.json();
-        const entries = Array.isArray(json)
-          ? json
-          : (json.results ?? json.history ?? []);
+        const [esRes, manualRes] = await Promise.all([
+          authFetch(
+            `/api/pipeline-requests?tenant_id=${selectedTenantId}&limit=500&offset=0&source=es`,
+          ),
+          authFetch(
+            `/api/pipeline-requests?tenant_id=${selectedTenantId}&limit=500&offset=0&source=manual`,
+          ),
+        ]);
+        if (!esRes.ok || !manualRes.ok) return;
+        const [esJson, manualJson] = await Promise.all([
+          esRes.json(),
+          manualRes.json(),
+        ]);
+        const esEntries = Array.isArray(esJson) ? esJson : (esJson.results ?? []);
+        const manualEntries = Array.isArray(manualJson)
+          ? manualJson
+          : (manualJson.results ?? []);
         if (cancelled) return;
-        // Build map of workflow_id -> { triggered, pipeline, time }
+
+        // Build map of workflow_id+run_id -> latest status entry.
         const newMap = {};
-        for (const entry of entries) {
-          if (entry.channel === "pipeline" && entry.workflow_id) {
-            const ts = entry.sent_at
-              ? new Date(entry.sent_at).toLocaleTimeString()
-              : "";
-            newMap[entry.workflow_id] = {
-              triggered: true,
-              pipeline: entry.recipient || "",
+        for (const entry of esEntries) {
+          if (!entry.workflow_id || !entry.run_id) continue;
+          const key = recentFailureKey(entry.workflow_id, entry.run_id);
+          const tsRaw = entry.processed_at || entry.triggered_at || entry.updated_at;
+          const ts = tsRaw ? new Date(tsRaw).toLocaleTimeString() : "";
+          const currentStamp = tsRaw ? new Date(tsRaw).getTime() : 0;
+          if (!newMap[key] || currentStamp >= (newMap[key].stamp || 0)) {
+            newMap[key] = {
+              status: entry.status,
+              pipeline: entry.pipeline_name || "",
               time: ts,
+              stamp: currentStamp,
+              source: "automatic",
             };
           }
         }
-        setTriggeredMap((prev) => ({ ...prev, ...newMap }));
+        for (const entry of manualEntries) {
+          if (!entry.workflow_id || !entry.run_id) continue;
+          const key = recentFailureKey(entry.workflow_id, entry.run_id);
+          const tsRaw = entry.sent_at;
+          const ts = tsRaw ? new Date(tsRaw).toLocaleTimeString() : "";
+          const currentStamp = tsRaw ? new Date(tsRaw).getTime() : 0;
+          if (!newMap[key] || currentStamp >= (newMap[key].stamp || 0)) {
+            newMap[key] = {
+              status: entry.status,
+              pipeline: entry.pipeline_name || entry.recipient || "",
+              time: ts,
+              stamp: currentStamp,
+              source: "manual",
+            };
+          }
+        }
+        setTriggeredMap(newMap);
       } catch {
         // ignore
       }
@@ -328,6 +402,7 @@ function RecentFailures({
   const handleTrigger = async (workflow) => {
     if (!selectedPipelineId) return;
     const wfKey = workflow.workflow_id || workflow.run_id;
+    const wfKeyExact = recentFailureKey(workflow.workflow_id, workflow.run_id);
     setTriggering((prev) => ({ ...prev, [wfKey]: true }));
     try {
       const pipeline = codefacPipelines.find(
@@ -337,10 +412,12 @@ function RecentFailures({
       const now = new Date().toLocaleTimeString();
       setTriggeredMap((prev) => ({
         ...prev,
-        [wfKey]: {
-          triggered: true,
+        [wfKeyExact]: {
+          status: "sent",
           pipeline: pipeline ? pipeline.name : "",
           time: now,
+          stamp: Date.now(),
+          source: "manual",
         },
       }));
     } catch {
@@ -483,12 +560,12 @@ function RecentFailures({
                 {codefacPipelines &&
                   codefacPipelines.length > 0 &&
                   notificationsEnabled && <th style={{ width: "36px" }}></th>}
-                <th>Workflow ID</th>
-                <th>Run ID</th>
-                <th>Type</th>
-                <th>Tasklist</th>
-                <th style={{ width: "72px" }}>Status</th>
-                <th style={{ width: "100px" }}>Close Time</th>
+                <th className="col-workflow-run">Workflow / Run</th>
+                <th className="col-failure-reason">Failure Reason</th>
+                <th className="col-workflow-type">Type</th>
+                <th className="col-tasklist">Tasklist</th>
+                <th className="col-status">Status</th>
+                <th className="col-close-time">Close Time</th>
                 {codefacPipelines &&
                   codefacPipelines.length > 0 &&
                   notificationsEnabled && (
@@ -501,7 +578,7 @@ function RecentFailures({
             </thead>
             <tbody>
               <tr>
-                <td colSpan={9} className="no-matches-cell">
+                <td colSpan={emptyColSpan} className="no-matches-cell">
                   No workflows match the selected filters.
                 </td>
               </tr>
@@ -516,12 +593,12 @@ function RecentFailures({
                 {codefacPipelines &&
                   codefacPipelines.length > 0 &&
                   notificationsEnabled && <th style={{ width: "36px" }}></th>}
-                <th>Workflow ID</th>
-                <th>Run ID</th>
-                <th>Type</th>
-                <th>Tasklist</th>
-                <th style={{ width: "72px" }}>Status</th>
-                <th style={{ width: "100px" }}>Close Time</th>
+                <th className="col-workflow-run">Workflow / Run</th>
+                <th className="col-failure-reason">Failure Reason</th>
+                <th className="col-workflow-type">Type</th>
+                <th className="col-tasklist">Tasklist</th>
+                <th className="col-status">Status</th>
+                <th className="col-close-time">Close Time</th>
                 {codefacPipelines &&
                   codefacPipelines.length > 0 &&
                   notificationsEnabled && (
@@ -533,7 +610,11 @@ function RecentFailures({
               </tr>
             </thead>
             <tbody>
-              {filteredFailures.map((f, idx) => (
+              {filteredFailures.map((f, idx) => {
+                const triggerEntry =
+                  triggeredMap[recentFailureKey(f.workflow_id, f.run_id)];
+                const triggerMeta = pipelineStatusMeta(triggerEntry?.status);
+                return (
                 <tr
                   key={idx}
                   className={canViewHistory ? "failures-row-clickable" : ""}
@@ -581,10 +662,23 @@ function RecentFailures({
                       </td>
                     )}
                   <td className="cell-id">
-                    <code title={f.workflow_id}>{f.workflow_id}</code>
+                    <div className="cell-id-stack">
+                      <div className="cell-id-line">
+                        <span className="cell-id-label">Workflow</span>
+                        <code title={f.workflow_id}>{f.workflow_id}</code>
+                      </div>
+                      <div className="cell-id-line">
+                        <span className="cell-id-label">Run</span>
+                        <code title={f.run_id}>{f.run_id}</code>
+                      </div>
+                    </div>
                   </td>
-                  <td className="cell-run-id">
-                    <code title={f.run_id}>{f.run_id}</code>
+                  <td className="cell-reason" title={f.failure_reason || ""}>
+                    {f.failure_reason ? (
+                      <code>{f.failure_reason}</code>
+                    ) : (
+                      <span className="cell-reason-empty">—</span>
+                    )}
                   </td>
                   <td className="cell-type" title={f.workflow_type}>
                     {f.workflow_type}
@@ -605,16 +699,16 @@ function RecentFailures({
                     notificationsEnabled && (
                       <>
                         <td style={{ textAlign: "center" }}>
-                          {triggeredMap[f.workflow_id || f.run_id]
-                            ?.triggered ? (
+                          {triggerMeta ? (
                             <span
+                              title={triggerMeta.title}
                               style={{
-                                color: "var(--success)",
+                                color: triggerMeta.color,
                                 fontSize: 14,
                                 fontWeight: 600,
                               }}
                             >
-                              ✓
+                              {triggerMeta.icon}
                             </span>
                           ) : (
                             <span
@@ -633,8 +727,7 @@ function RecentFailures({
                             color: "var(--fg-secondary)",
                           }}
                         >
-                          {triggeredMap[f.workflow_id || f.run_id]
-                            ?.triggered ? (
+                          {triggerEntry ? (
                             <>
                               <span
                                 style={{
@@ -642,8 +735,7 @@ function RecentFailures({
                                   color: "var(--fg)",
                                 }}
                               >
-                                {triggeredMap[f.workflow_id || f.run_id]
-                                  ?.pipeline || ""}
+                                {triggerEntry.pipeline || ""}
                               </span>
                               <span
                                 style={{
@@ -652,8 +744,17 @@ function RecentFailures({
                                   color: "var(--fg-tertiary)",
                                 }}
                               >
-                                {triggeredMap[f.workflow_id || f.run_id]
-                                  ?.time || ""}
+                                {triggerEntry.time || ""}
+                              </span>
+                              <span
+                                style={{
+                                  display: "block",
+                                  fontSize: 10,
+                                  color: "var(--fg-tertiary)",
+                                  textTransform: "capitalize",
+                                }}
+                              >
+                                {triggerEntry.source}
                               </span>
                             </>
                           ) : (
@@ -663,7 +764,8 @@ function RecentFailures({
                       </>
                     )}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

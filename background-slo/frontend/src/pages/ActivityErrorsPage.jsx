@@ -4,16 +4,16 @@ function ActivityErrorsPage({
   data,
   activityStatusFilter,
   onActivityStatusFilterChange,
-  activityErrorDetailField,
-  onActivityErrorDetailFieldChange,
 }) {
   return (
     <ActivityErrors
       activityErrors={data.activity_errors}
+      liveFailureCount={data.total_failed}
+      processedFailureCount={data.activity_errors_processed_count}
+      pendingFailureCount={data.activity_errors_pending_count}
+      hasPendingFailures={data.activity_errors_pending}
       statusFilter={activityStatusFilter}
       onStatusFilterChange={onActivityStatusFilterChange}
-      errorDetailField={activityErrorDetailField}
-      onErrorDetailFieldChange={onActivityErrorDetailFieldChange}
     />
   );
 }

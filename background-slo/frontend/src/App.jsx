@@ -8,6 +8,13 @@ import RecentFailuresPage from "./pages/RecentFailuresPage";
 import ActivityErrorsPage from "./pages/ActivityErrorsPage";
 import P100LatencyPage from "./pages/P100LatencyPage";
 import SesDashboardPage from "./pages/SesDashboardPage";
+import NotificationsPage from "./pages/NotificationsPage";
+import ReportHistoryPage from "./pages/ReportHistoryPage";
+import PipelineErrorsPage from "./pages/PipelineErrorsPage";
+import LoginPage from "./pages/LoginPage";
+import PeoplesPage from "./pages/PeoplesPage";
+import TenantsPage from "./pages/TenantsPage";
+import WelcomePage from "./pages/WelcomePage";
 
 // Route-to-permission mapping (must match Sidebar.jsx)
 const ROUTE_PERM = {
@@ -17,16 +24,11 @@ const ROUTE_PERM = {
   "/p100-latency": "p100-latency",
   "/ses": "ses",
   "/notifications": "notifications",
+  "/pipeline-requests": "notifications",
   "/report-history": "report-history",
   "/peoples": "peoples",
   "/admin/clients": "admin",
 };
-import NotificationsPage from "./pages/NotificationsPage";
-import ReportHistoryPage from "./pages/ReportHistoryPage";
-import LoginPage from "./pages/LoginPage";
-import PeoplesPage from "./pages/PeoplesPage";
-import TenantsPage from "./pages/TenantsPage";
-import WelcomePage from "./pages/WelcomePage";
 
 import "./App.css";
 
@@ -69,6 +71,12 @@ const PAGE_META = {
     description:
       "Configure notification channels, alert rules, and scheduled reports.",
   },
+  "/pipeline-requests": {
+    eyebrow: "Pages / Notifications",
+    title: "Pipeline Requests",
+    description:
+      "Review pipeline trigger requests, delivery status, and requests skipped because the same workflow type and error were already handled.",
+  },
   "/report-history": {
     eyebrow: "Pages / Reports",
     title: "Report & Pipeline History",
@@ -86,6 +94,28 @@ const PAGE_META = {
     description: "Manage and configure client tenants.",
   },
 };
+
+function normalizeActivityStatus(status) {
+  return String(status || "")
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/_/g, "");
+}
+
+function isFailedTimeoutOnlyFilter(statuses) {
+  return (
+    Array.isArray(statuses) &&
+    statuses.length > 0 &&
+    statuses.every((status) => {
+      const normalized = normalizeActivityStatus(status);
+      return (
+        normalized === "failed" ||
+        normalized === "timeout" ||
+        normalized === "timedout"
+      );
+    })
+  );
+}
 
 function App() {
   const { user, checking } = useAuth();
@@ -132,15 +162,6 @@ function AppContent() {
     const saved = localStorage.getItem("slo_dashboard_activity_status_filter");
     return saved ? saved.split(",") : [];
   });
-
-  const [activityErrorDetailField, setActivityErrorDetailField] = useState(
-    () => {
-      const saved = localStorage.getItem(
-        "slo_dashboard_activity_error_detail_field",
-      );
-      return saved || "";
-    },
-  );
 
   const [tasklistFilter, setTasklistFilter] = useState(() => {
     const saved = localStorage.getItem("slo_dashboard_tasklist_filter");
@@ -333,11 +354,16 @@ function AppContent() {
 
   const buildQueryString = useCallback(() => {
     const params = new URLSearchParams();
+    const effectiveStatusFilter =
+      location.pathname === "/activity-errors" &&
+      isFailedTimeoutOnlyFilter(activityStatusFilter)
+        ? activityStatusFilter
+        : statusFilter;
     params.set("tenant_id", selectedTenantId);
     params.set("limit", limit);
     params.set("tasklist_window", tasklistWindow);
-    if (statusFilter.length > 0 && statusFilter.length < 2) {
-      params.set("status_filter", statusFilter.join(","));
+    if (effectiveStatusFilter.length > 0 && effectiveStatusFilter.length < 2) {
+      params.set("status_filter", effectiveStatusFilter.join(","));
     }
     if (tasklistFilter.length > 0) {
       params.set("tasklist_filter", tasklistFilter.join(","));
@@ -354,11 +380,9 @@ function AppContent() {
     if (activityStatusFilter.length > 0) {
       params.set("activity_status_filter", activityStatusFilter.join(","));
     }
-    if (activityErrorDetailField) {
-      params.set("activity_error_detail_field", activityErrorDetailField);
-    }
     return params.toString();
   }, [
+    location.pathname,
     selectedTenantId,
     limit,
     tasklistWindow,
@@ -368,7 +392,6 @@ function AppContent() {
     endTime,
     offset,
     activityStatusFilter,
-    activityErrorDetailField,
   ]);
 
   const fetchData = useCallback(async () => {
@@ -455,11 +478,6 @@ function AppContent() {
       "slo_dashboard_activity_status_filter",
       newFilter.join(","),
     );
-  };
-
-  const handleActivityErrorDetailFieldChange = (newField) => {
-    setActivityErrorDetailField(newField);
-    localStorage.setItem("slo_dashboard_activity_error_detail_field", newField);
   };
 
   const handleTasklistFilterChange = (newFilter) => {
@@ -882,10 +900,6 @@ function AppContent() {
                         onActivityStatusFilterChange={
                           handleActivityStatusFilterChange
                         }
-                        activityErrorDetailField={activityErrorDetailField}
-                        onActivityErrorDetailFieldChange={
-                          handleActivityErrorDetailFieldChange
-                        }
                       />
                     ) : (
                       <Navigate to="/" replace />
@@ -912,6 +926,14 @@ function AppContent() {
                   path="/notifications"
                   element={
                     canAccess("/notifications") ? null : (
+                      <Navigate to="/" replace />
+                    )
+                  }
+                />
+                <Route
+                  path="/pipeline-requests"
+                  element={
+                    canAccess("/pipeline-requests") ? null : (
                       <Navigate to="/" replace />
                     )
                   }
@@ -965,6 +987,14 @@ function AppContent() {
               </div>
             )}
 
+          {location.pathname === "/pipeline-requests" &&
+            canAccess("/pipeline-requests") &&
+            !showWelcome && (
+              <div className="app-content">
+                <PipelineErrorsPage selectedTenantId={selectedTenantId} />
+              </div>
+            )}
+
           {location.pathname === "/report-history" &&
             canAccess("/report-history") &&
             !showWelcome && (
@@ -998,6 +1028,7 @@ function AppContent() {
             selectedTenantId &&
             location.pathname !== "/ses" &&
             location.pathname !== "/notifications" &&
+            location.pathname !== "/pipeline-requests" &&
             location.pathname !== "/report-history" &&
             location.pathname !== "/peoples" &&
             location.pathname !== "/admin/clients" && (
@@ -1023,6 +1054,7 @@ function AppContent() {
             !error &&
             location.pathname !== "/ses" &&
             location.pathname !== "/notifications" &&
+            location.pathname !== "/pipeline-requests" &&
             location.pathname !== "/report-history" &&
             location.pathname !== "/peoples" &&
             location.pathname !== "/admin/clients" && (

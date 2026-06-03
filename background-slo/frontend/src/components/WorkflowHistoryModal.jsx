@@ -139,9 +139,93 @@ function parseEvent(event, index) {
   return {
     eventId: Number(eventId) || eventId,
     eventType,
+    eventTime: extractEventTime(raw),
     attrs,
     raw,
   };
+}
+
+function parseHistoryTimestamp(value) {
+  if (value == null || value === "") return null;
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value <= 0) return null;
+    if (value > 1e17) return new Date(value / 1e6);
+    if (value > 1e14) return new Date(value / 1e3);
+    if (value > 1e11) return new Date(value);
+    return new Date(value * 1000);
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (/^\d+$/.test(trimmed)) {
+      return parseHistoryTimestamp(Number(trimmed));
+    }
+    const parsed = Date.parse(trimmed);
+    return Number.isNaN(parsed) ? null : new Date(parsed);
+  }
+
+  if (typeof value === "object") {
+    const seconds =
+      value.seconds ??
+      value.Seconds ??
+      value.sec ??
+      value.Sec ??
+      value.epochSeconds ??
+      value.EpochSeconds;
+    const nanos =
+      value.nanos ??
+      value.Nanos ??
+      value.nanoseconds ??
+      value.Nanoseconds ??
+      0;
+    if (seconds != null) {
+      const secNum = Number(seconds);
+      const nanoNum = Number(nanos) || 0;
+      if (Number.isFinite(secNum) && secNum > 0) {
+        return new Date(secNum * 1000 + nanoNum / 1e6);
+      }
+    }
+
+    for (const key of [
+      "timestamp",
+      "Timestamp",
+      "eventTime",
+      "EventTime",
+      "time",
+      "Time",
+    ]) {
+      if (value[key] != null) {
+        return parseHistoryTimestamp(value[key]);
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractEventTime(raw) {
+  for (const key of [
+    "eventTime",
+    "EventTime",
+    "eventTimestamp",
+    "EventTimestamp",
+    "timestamp",
+    "Timestamp",
+    "time",
+    "Time",
+  ]) {
+    if (raw?.[key] != null) {
+      const parsed = parseHistoryTimestamp(raw[key]);
+      if (parsed) return parsed;
+    }
+  }
+  return null;
 }
 
 function looksLikeBase64(str) {
@@ -290,6 +374,32 @@ function startedEventId(attrs) {
   return eventIdValue(attrs.startedEventId ?? attrs.StartedEventId);
 }
 
+function updateNodeTiming(node, patch = {}) {
+  if (patch.scheduledAt) node.scheduledAt = patch.scheduledAt;
+  if (patch.startedAt) node.startedAt = patch.startedAt;
+  if (patch.endedAt) node.endedAt = patch.endedAt;
+
+  node.queueMs =
+    node.scheduledAt && node.startedAt
+      ? Math.max(0, node.startedAt.getTime() - node.scheduledAt.getTime())
+      : null;
+
+  const runStart = node.startedAt || node.scheduledAt || null;
+  node.durationMs =
+    runStart && node.endedAt
+      ? Math.max(0, node.endedAt.getTime() - runStart.getTime())
+      : null;
+
+  node.totalTimeMs =
+    node.scheduledAt && node.endedAt
+      ? Math.max(0, node.endedAt.getTime() - node.scheduledAt.getTime())
+      : node.durationMs;
+}
+
+function decisionTypeName(attrs) {
+  return attrs.taskList?.name || attrs.TaskList?.Name || "Decision Task";
+}
+
 /** LocalActivityTask* and ActivityTask* share the same handling */
 function normalizeActivityEventType(eventType) {
   return eventType.replace(/^Local/, "");
@@ -310,7 +420,7 @@ function isActivityFailureOutcome(status) {
 }
 
 function applyActivityFailureState(node, evt) {
-  const { attrs, raw, eventType: rawType } = evt;
+  const { attrs, raw, eventType: rawType, eventTime } = evt;
   const timedOut =
     normalizeActivityEventType(rawType) === "ActivityTaskTimedOut" ||
     /TimedOut$/i.test(rawType);
@@ -321,6 +431,7 @@ function applyActivityFailureState(node, evt) {
   node.raw = raw;
   node.relatedEvents = node.relatedEvents || [];
   node.relatedEvents.push(raw);
+  updateNodeTiming(node, { endedAt: eventTime });
 
   if (timedOut) {
     node.failure = {
@@ -338,8 +449,8 @@ function applyActivityFailureState(node, evt) {
   }
 }
 
-function createActivityNode(nodeId, eventId, attrs, raw) {
-  return {
+function createActivityNode(nodeId, eventId, attrs, raw, eventTime) {
+  const node = {
     id: nodeId,
     kind: "activity",
     scheduledEventId: eventId,
@@ -353,16 +464,18 @@ function createActivityNode(nodeId, eventId, attrs, raw) {
     raw,
     relatedEvents: [raw],
   };
+  updateNodeTiming(node, { scheduledAt: eventTime });
+  return node;
 }
 
-function createWorkflowStartNode(attrs, raw, id = "workflow-start") {
+function createWorkflowStartNode(attrs, raw, eventTime, id = "workflow-start") {
   const continuedFailure = extractContinuedFailure(attrs);
   const workflowName =
     attrs.workflowType?.name ||
     attrs.WorkflowType?.Name ||
     attrs.workflowType?.Name ||
     "Workflow";
-  return {
+  const node = {
     id,
     kind: "workflow",
     title: continuedFailure ? "Workflow Retry" : "Workflow Started",
@@ -375,12 +488,14 @@ function createWorkflowStartNode(attrs, raw, id = "workflow-start") {
     raw,
     relatedEvents: [raw],
   };
+  updateNodeTiming(node, { startedAt: eventTime });
+  return node;
 }
 
-function createWorkflowEndNode(eventType, attrs, raw) {
+function createWorkflowEndNode(eventType, attrs, raw, eventTime) {
   const failed = eventType === "WorkflowExecutionFailed";
   const timedOut = eventType === "WorkflowExecutionTimedOut";
-  return {
+  const node = {
     id: "workflow-end",
     kind: "workflow",
     title: failed
@@ -397,13 +512,35 @@ function createWorkflowEndNode(eventType, attrs, raw) {
     raw,
     relatedEvents: [raw],
   };
+  updateNodeTiming(node, { endedAt: eventTime });
+  return node;
 }
 
-function createOrphanActivityNode(attrs, raw, eventId, eventType, status, subtitle) {
+function createDecisionNode(nodeId, eventId, attrs, raw, eventTime) {
+  const node = {
+    id: nodeId,
+    kind: "decision",
+    scheduledEventId: eventId,
+    title: "Decision Task",
+    subtitle: "Scheduled",
+    status: "pending",
+    eventType: "DecisionTaskScheduled",
+    input: null,
+    output: null,
+    failure: null,
+    raw,
+    relatedEvents: [raw],
+    detailLabel: decisionTypeName(attrs),
+  };
+  updateNodeTiming(node, { scheduledAt: eventTime });
+  return node;
+}
+
+function createOrphanActivityNode(attrs, raw, eventId, eventType, status, subtitle, eventTime) {
   const schedId = scheduledEventId(attrs);
   const nodeId =
     schedId != null ? `activity-${schedId}` : `activity-orphan-${eventId}`;
-  return {
+  const node = {
     id: nodeId,
     kind: "activity",
     scheduledEventId: schedId ?? eventId,
@@ -424,6 +561,8 @@ function createOrphanActivityNode(attrs, raw, eventId, eventType, status, subtit
     raw,
     relatedEvents: [raw],
   };
+  updateNodeTiming(node, { endedAt: eventTime });
+  return node;
 }
 
 function finalizeOpenActivities(nodes, syncNodeInItems, failure) {
@@ -438,6 +577,24 @@ function finalizeOpenActivities(nodes, syncNodeInItems, failure) {
       (node.status === "pending" || node.status === "running")
     ) {
       applyFailureToNode(node, fallback);
+      syncNodeInItems(node);
+    }
+  }
+}
+
+function finalizeOpenDecisions(nodes, syncNodeInItems) {
+  for (const node of nodes) {
+    if (
+      node.kind === "decision" &&
+      (node.status === "pending" || node.status === "running")
+    ) {
+      node.status = "failed";
+      node.subtitle = "Unfinished";
+      node.failure = node.failure || {
+        reason: "",
+        message: "Decision task did not reach a terminal event before the workflow ended",
+        details: "",
+      };
       syncNodeInItems(node);
     }
   }
@@ -472,6 +629,7 @@ function buildWorkflowGraph(events, options = {}) {
 
   const parsed = normalizeHistoryEvents(events).map(parseEvent);
   const activityByKey = new Map();
+  const decisionByKey = new Map();
   const items = [];
   const nodes = [];
   const seenNodeIds = new Set();
@@ -481,8 +639,10 @@ function buildWorkflowGraph(events, options = {}) {
   let workflowStartCount = 0;
   let lastContinuedFailure = null;
   let lastOpenActivity = null;
+  let lastOpenDecision = null;
 
   const activityNodeId = (eventId) => `activity-s${segmentIndex}-${eventId}`;
+  const decisionNodeId = (eventId) => `decision-s${segmentIndex}-${eventId}`;
 
   const beginNewSegment = () => {
     if (workflowFailed || lastContinuedFailure) {
@@ -490,7 +650,9 @@ function buildWorkflowGraph(events, options = {}) {
     }
     segmentIndex++;
     activityByKey.clear();
+    decisionByKey.clear();
     lastOpenActivity = null;
+    lastOpenDecision = null;
   };
 
   const lookupActivity = (...ids) => {
@@ -511,6 +673,27 @@ function buildWorkflowGraph(events, options = {}) {
       activityByKey.set(id, node);
       activityByKey.set(String(id), node);
       activityByKey.set(Number(id), node);
+    }
+  };
+
+  const lookupDecision = (...ids) => {
+    for (const id of ids) {
+      if (id == null) continue;
+      const node =
+        decisionByKey.get(id) ??
+        decisionByKey.get(String(id)) ??
+        decisionByKey.get(Number(id));
+      if (node) return node;
+    }
+    return null;
+  };
+
+  const registerDecisionKeys = (node, ...ids) => {
+    for (const id of ids) {
+      if (id == null) continue;
+      decisionByKey.set(id, node);
+      decisionByKey.set(String(id), node);
+      decisionByKey.set(Number(id), node);
     }
   };
 
@@ -585,15 +768,115 @@ function buildWorkflowGraph(events, options = {}) {
     return null;
   };
 
+  const findDecisionNode = (attrs, lastNode) => {
+    const schedId = scheduledEventId(attrs);
+    const startId = startedEventId(attrs);
+
+    let node = lookupDecision(schedId, startId);
+    if (node) return node;
+
+    if (schedId != null) {
+      const nodeId = decisionNodeId(schedId);
+      node = nodes.find(
+        (n) =>
+          n.kind === "decision" &&
+          (n.id === nodeId ||
+            n.id === `decision-${schedId}` ||
+            String(n.scheduledEventId) === String(schedId) ||
+            n.scheduledEventId === schedId),
+      );
+      if (node) return node;
+    }
+
+    if (
+      lastNode &&
+      (lastNode.status === "pending" || lastNode.status === "running")
+    ) {
+      return lastNode;
+    }
+
+    return null;
+  };
+
   for (const evt of parsed) {
-    const { eventType: rawType, attrs, eventId, raw } = evt;
+    const { eventType: rawType, attrs, eventId, raw, eventTime } = evt;
     const eventType = normalizeActivityEventType(rawType);
 
-    if (rawType.startsWith("DecisionTask")) {
-      if (rawType === "DecisionTaskCompleted") {
-        pendingDecisionEdge = true;
-        pendingDecisionLabel = "Decision";
+    if (rawType === "DecisionTaskScheduled") {
+      const nodeId = decisionNodeId(eventId);
+      if (!seenNodeIds.has(nodeId)) {
+        const node = createDecisionNode(nodeId, eventId, attrs, raw, eventTime);
+        registerDecisionKeys(node, eventId, scheduledEventId(attrs));
+        pushNode(node);
+        lastOpenDecision = node;
+      } else {
+        const existing = lookupDecision(eventId, scheduledEventId(attrs));
+        if (existing) lastOpenDecision = existing;
       }
+      continue;
+    }
+
+    if (rawType === "DecisionTaskStarted") {
+      const schedId = scheduledEventId(attrs);
+      const node = findDecisionNode(attrs, lastOpenDecision);
+      if (node) {
+        node.subtitle = "Running";
+        node.status = "running";
+        node.eventType = rawType;
+        node.raw = raw;
+        node.relatedEvents.push(raw);
+        updateNodeTiming(node, { startedAt: eventTime });
+        registerDecisionKeys(node, schedId, eventId, startedEventId(attrs));
+        lastOpenDecision = node;
+        syncNodeInItems(node);
+      }
+      continue;
+    }
+
+    if (rawType === "DecisionTaskCompleted") {
+      const node = findDecisionNode(attrs, lastOpenDecision);
+      if (node) {
+        node.subtitle = "Completed";
+        node.status = "success";
+        node.eventType = rawType;
+        node.raw = raw;
+        node.relatedEvents.push(raw);
+        updateNodeTiming(node, { endedAt: eventTime });
+        syncNodeInItems(node);
+      }
+      lastOpenDecision = null;
+      continue;
+    }
+
+    if (rawType === "DecisionTaskFailed" || rawType === "DecisionTaskTimedOut") {
+      const timedOut = rawType === "DecisionTaskTimedOut";
+      let node = findDecisionNode(attrs, lastOpenDecision);
+      if (!node) {
+        node = createDecisionNode(
+          scheduledEventId(attrs) != null
+            ? decisionNodeId(scheduledEventId(attrs))
+            : `decision-orphan-${eventId}`,
+          scheduledEventId(attrs) ?? eventId,
+          attrs,
+          raw,
+          eventTime,
+        );
+        upsertActivityNode(node);
+      }
+      node.subtitle = timedOut ? "Timed Out" : "Failed";
+      node.status = timedOut ? "timeout" : "failed";
+      node.eventType = rawType;
+      node.raw = raw;
+      node.relatedEvents.push(raw);
+      node.failure = extractFailure(attrs) || {
+        message: timedOut ? "Decision task timed out" : "Decision task failed",
+        reason: attrs.reason || attrs.Reason || attrs.timeoutType || attrs.TimeoutType || "",
+        details: formatPayload(attrs.details || attrs.Details),
+      };
+      updateNodeTiming(node, { endedAt: eventTime });
+      registerDecisionKeys(node, scheduledEventId(attrs), startedEventId(attrs), node.scheduledEventId);
+      syncNodeInItems(node);
+      lastOpenDecision = null;
       continue;
     }
 
@@ -619,7 +902,7 @@ function buildWorkflowGraph(events, options = {}) {
       const startId =
         workflowStartCount === 1 ? "workflow-start" : `workflow-start-${segmentIndex}`;
       if (!seenNodeIds.has(startId)) {
-        pushNode(createWorkflowStartNode(attrs, raw, startId));
+        pushNode(createWorkflowStartNode(attrs, raw, eventTime, startId));
       }
       if (continuedFailure && segmentIndex > 0) {
         applyContinuedFailureToPriorSegment(
@@ -638,7 +921,7 @@ function buildWorkflowGraph(events, options = {}) {
       eventType === "WorkflowExecutionTimedOut"
     ) {
       pendingDecisionEdge = false;
-      const endNode = createWorkflowEndNode(eventType, attrs, raw);
+      const endNode = createWorkflowEndNode(eventType, attrs, raw, eventTime);
       const existingIdx = items.findIndex(
         (i) => i.type === "node" && i.id === "workflow-end",
       );
@@ -655,7 +938,7 @@ function buildWorkflowGraph(events, options = {}) {
     if (eventType === "ActivityTaskScheduled") {
       const nodeId = activityNodeId(eventId);
       if (!seenNodeIds.has(nodeId)) {
-        const node = createActivityNode(nodeId, eventId, attrs, raw);
+        const node = createActivityNode(nodeId, eventId, attrs, raw, eventTime);
         registerActivityKeys(node, eventId, scheduledEventId(attrs));
         pushNode(node);
         lastOpenActivity = node;
@@ -674,6 +957,7 @@ function buildWorkflowGraph(events, options = {}) {
           node.subtitle = "Running";
           node.status = "running";
         }
+        updateNodeTiming(node, { startedAt: eventTime });
         node.relatedEvents.push(raw);
         registerActivityKeys(node, schedId, eventId, startedEventId(attrs));
         lastOpenActivity = node;
@@ -710,6 +994,7 @@ function buildWorkflowGraph(events, options = {}) {
           rawType,
           /TimedOut$/i.test(rawType) ? "timeout" : "failed",
           /TimedOut$/i.test(rawType) ? "Timed Out" : "Failed",
+          eventTime,
         );
         registerActivityKeys(
           orphan,
@@ -732,6 +1017,7 @@ function buildWorkflowGraph(events, options = {}) {
         node.eventType = rawType;
         node.relatedEvents.push(raw);
         node.raw = raw;
+        updateNodeTiming(node, { endedAt: eventTime });
         syncNodeInItems(node);
       }
       lastOpenActivity = null;
@@ -791,6 +1077,18 @@ function buildWorkflowGraph(events, options = {}) {
   if (workflowFailed || lastContinuedFailure) {
     finalizeOpenActivities(nodes, syncNodeInItems, lastContinuedFailure);
   }
+  finalizeOpenDecisions(nodes, syncNodeInItems);
+
+  const workflowStartNode = nodes.find((n) => n.id === "workflow-start");
+  const workflowEndNode = nodes.find((n) => n.id === "workflow-end");
+  if (workflowStartNode && workflowEndNode) {
+    workflowEndNode.startedAt = workflowStartNode.startedAt || null;
+    updateNodeTiming(workflowEndNode, {
+      startedAt: workflowEndNode.startedAt,
+      endedAt: workflowEndNode.endedAt,
+    });
+    syncNodeInItems(workflowEndNode);
+  }
 
   pendingDecisionEdge = false;
 
@@ -814,7 +1112,8 @@ function buildWorkflowGraph(events, options = {}) {
 
   const finalNodes = compacted
     .filter((i) => i.type === "node")
-    .map((i) => i.data);
+    .map((i) => i.data)
+    .filter((node) => node.kind !== "decision");
 
   if (finalNodes.length === 0 && parsed.length > 0) {
     for (const evt of parsed) {
@@ -844,6 +1143,10 @@ function buildWorkflowGraph(events, options = {}) {
         failure: extractFailure(evt.attrs),
         raw: evt.raw,
         relatedEvents: [evt.raw],
+        startedAt: evt.eventTime || null,
+        endedAt: evt.eventTime || null,
+        durationMs: 0,
+        queueMs: null,
       });
     }
   }
@@ -862,6 +1165,38 @@ function workflowStatusClass(status) {
   return "status-default";
 }
 
+function formatDuration(ms) {
+  if (ms == null || !Number.isFinite(ms)) return "";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)} s`;
+  const minutes = Math.floor(seconds / 60);
+  const remSeconds = Math.round(seconds % 60);
+  if (minutes < 60) return `${minutes}m ${remSeconds}s`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return `${hours}h ${remMinutes}m`;
+}
+
+function formatDateTime(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString();
+}
+
+function buildNodeTimingSummary(node) {
+  const bits = [];
+  if (node.queueMs != null) {
+    bits.push(`Queued ${formatDuration(node.queueMs)}`);
+  }
+  if (node.durationMs != null) {
+    bits.push(`Ran ${formatDuration(node.durationMs)}`);
+  }
+  if (node.totalTimeMs != null) {
+    bits.push(`Total ${formatDuration(node.totalTimeMs)}`);
+  }
+  return bits.join(" · ");
+}
+
 function NodeStatusDot({ status }) {
   return <span className={`wf-node-dot wf-node-dot-${status}`} aria-hidden="true" />;
 }
@@ -876,9 +1211,23 @@ function WorkflowGraph({ items, selectedNode, onSelectNode }) {
       {items.map((item, index) => (
         <div key={item.id} className="wf-timeline-step">
           {index > 0 && <div className="wf-timeline-line" aria-hidden="true" />}
-          {item.type === "decision" ? (
+          {item.type === "decision" ||
+          (item.type === "node" && item.data.kind === "decision") ? (
             <div className="wf-decision-edge">
-              <span className="wf-decision-edge-label">{item.label}</span>
+              <span className="wf-decision-edge-label">
+                {item.type === "decision"
+                  ? item.label
+                  : item.data.title || "Decision"}
+              </span>
+              {buildNodeTimingSummary(
+                item.type === "decision" ? item : item.data,
+              ) && (
+                <span className="wf-decision-edge-meta">
+                  {buildNodeTimingSummary(
+                    item.type === "decision" ? item : item.data,
+                  )}
+                </span>
+              )}
             </div>
           ) : (
             <button
@@ -892,6 +1241,11 @@ function WorkflowGraph({ items, selectedNode, onSelectNode }) {
               <div className="wf-node-text">
                 <span className="wf-node-title">{item.data.title}</span>
                 <span className="wf-node-subtitle">{item.data.subtitle}</span>
+                {buildNodeTimingSummary(item.data) && (
+                  <span className="wf-node-meta">
+                    {buildNodeTimingSummary(item.data)}
+                  </span>
+                )}
               </div>
               {(item.data.status === "failed" || item.data.status === "timeout") && (
                 <span
@@ -1074,6 +1428,9 @@ function WorkflowHistoryModal({ workflow, tenantId, onClose }) {
                 {selectedNode ? (
                   <div className="wf-detail-content">
                     <h4 className="wf-detail-heading">{selectedNode.title}</h4>
+                    {selectedNode.detailLabel && (
+                      <p className="wf-detail-meta">{selectedNode.detailLabel}</p>
+                    )}
                     <p className="wf-detail-meta">
                       <span
                         className={`status-badge ${
@@ -1103,6 +1460,46 @@ function WorkflowHistoryModal({ workflow, tenantId, onClose }) {
                         )}
                         {selectedNode.failure.details && (
                           <pre className="wf-code-block">{selectedNode.failure.details}</pre>
+                        )}
+                      </div>
+                    )}
+
+                    {(selectedNode.startedAt ||
+                      selectedNode.endedAt ||
+                      selectedNode.totalTimeMs != null ||
+                      selectedNode.durationMs != null ||
+                      selectedNode.queueMs != null) && (
+                      <div className="wf-detail-block">
+                        <h5>Timing</h5>
+                        {selectedNode.startedAt && (
+                          <p>
+                            <strong>Started:</strong>{" "}
+                            {formatDateTime(selectedNode.startedAt)}
+                          </p>
+                        )}
+                        {selectedNode.endedAt && (
+                          <p>
+                            <strong>Ended:</strong>{" "}
+                            {formatDateTime(selectedNode.endedAt)}
+                          </p>
+                        )}
+                        {selectedNode.queueMs != null && (
+                          <p>
+                            <strong>Queue wait:</strong>{" "}
+                            {formatDuration(selectedNode.queueMs)}
+                          </p>
+                        )}
+                        {selectedNode.durationMs != null && (
+                          <p>
+                            <strong>Run time:</strong>{" "}
+                            {formatDuration(selectedNode.durationMs)}
+                          </p>
+                        )}
+                        {selectedNode.totalTimeMs != null && (
+                          <p>
+                            <strong>Total time:</strong>{" "}
+                            {formatDuration(selectedNode.totalTimeMs)}
+                          </p>
                         )}
                       </div>
                     )}

@@ -1,13 +1,19 @@
-import { createContext, useContext, useState, useEffect, useCallback } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+} from "react";
 
 const AuthContext = createContext(null);
 
 const TOKEN_KEY = "slo_auth_token";
-const USER_KEY  = "slo_auth_user";
+const USER_KEY = "slo_auth_user";
 
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
-  const [user, setUser]   = useState(() => {
+  const [user, setUser] = useState(() => {
     const s = localStorage.getItem(USER_KEY);
     return s ? JSON.parse(s) : null;
   });
@@ -17,7 +23,10 @@ export function AuthProvider({ children }) {
   // On mount, validate any stored token against /api/auth/me
   useEffect(() => {
     const stored = localStorage.getItem(TOKEN_KEY);
-    if (!stored) { setChecking(false); return; }
+    if (!stored) {
+      setChecking(false);
+      return;
+    }
 
     fetch("/api/auth/me", { headers: { Authorization: `Bearer ${stored}` } })
       .then((r) => {
@@ -37,6 +46,13 @@ export function AuthProvider({ children }) {
       .finally(() => setChecking(false));
   }, []);
 
+  const clearAuth = useCallback(() => {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_KEY);
+    setUser(null);
+    setToken(null);
+  }, []);
+
   const signIn = useCallback((sessionToken, userInfo) => {
     localStorage.setItem(TOKEN_KEY, sessionToken);
     localStorage.setItem(USER_KEY, JSON.stringify(userInfo));
@@ -45,27 +61,30 @@ export function AuthProvider({ children }) {
   }, []);
 
   const signOut = useCallback(() => {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USER_KEY);
-    setToken(null);
-    setUser(null);
+    clearAuth();
     window.google?.accounts?.id?.disableAutoSelect();
-  }, []);
+  }, [clearAuth]);
 
   // Drop-in fetch replacement that injects the Bearer token
   const authFetch = useCallback(
-    (url, options = {}) => {
+    async (url, options = {}) => {
       const headers = { ...options.headers };
       if (token) {
         headers.Authorization = `Bearer ${token}`;
       }
-      return fetch(url, { ...options, headers });
+      const response = await fetch(url, { ...options, headers });
+      if (response.status === 401) {
+        clearAuth();
+      }
+      return response;
     },
-    [token],
+    [clearAuth, token],
   );
 
   return (
-    <AuthContext.Provider value={{ user, token, checking, signIn, signOut, authFetch }}>
+    <AuthContext.Provider
+      value={{ user, token, checking, signIn, signOut, authFetch }}
+    >
       {children}
     </AuthContext.Provider>
   );
