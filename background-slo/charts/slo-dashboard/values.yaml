@@ -15,7 +15,7 @@ backend:
   image:
     # -- Backend image repository (Go API)
     repository: technotech001/background-slo-backend
-    tag: "v0.2.002"
+    tag: "v0.2.003"
     # -- Image pull policy
     pullPolicy: IfNotPresent
     # -- Image pull secrets (empty for public images on Docker Hub)
@@ -34,7 +34,7 @@ frontend:
   image:
     # -- Frontend image repository (Nginx serving static files)
     repository: technotech001/background-slo-frontend
-    tag: "v0.2.002"
+    tag: "v0.2.003"
     # -- Image pull policy
     pullPolicy: IfNotPresent
     # -- Image pull secrets (empty for public images on Docker Hub)
