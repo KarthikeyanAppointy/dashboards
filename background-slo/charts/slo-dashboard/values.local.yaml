@@ -1,5 +1,5 @@
 # =============================================================================
-# SLO Dashboard Helm Chart Values
+# SLO Dashboard Helm Chart Values - Local Overrides
 # =============================================================================
 
 # -- Number of replicas for the deployment
@@ -33,7 +33,6 @@ backend:
 frontend:
   image:
     # -- Frontend image repository (Nginx serving static files)
-    repository: technotech001/background-slo-frontend
     tag: "v0.2.002"
     # -- Image pull policy
     pullPolicy: IfNotPresent
@@ -61,14 +60,14 @@ ingress:
   # -- Enable ingress
   enabled: true
   # -- Ingress class name
-  className: ""
+  className: "nginx"
   # -- Ingress annotations
   annotations: {}
   #   kubernetes.io/ingress.class: nginx
   #   cert-manager.io/cluster-issuer: letsencrypt-prod
   # -- Ingress hostnames
   hosts:
-    - host: slo-dashboard.local
+    - host: bg-slo.appointyindia.com
       paths:
         - path: /
           pathType: Prefix
@@ -76,7 +75,7 @@ ingress:
   tls: []
   #   - secretName: slo-dashboard-tls
   #     hosts:
-  #       - slo-dashboard.local
+  #       - bg-slo.appointyindia.com
 
 # -- Environment variables passed to the container
 # These will be set directly on the pod (not via ConfigMap) for sensitive data.
@@ -121,24 +120,17 @@ configmap:
   # -- Restrict login to @appointy.com accounts only (set to "false" to allow any Google account)
   APPONTY_ONLY_LOGIN: "true"
 
-# -- Workflow history uploads for Codefac/alert {{workflow_history}} placeholders
-# Prefer this block over legacy configmap.WORKFLOW_HISTORY_* keys.
-# On GKE, enable serviceAccount.workloadIdentity and grant the GCP SA roles/storage.objectCreator on the bucket.
+# -- Workflow history → GCS for Codefac workflow_history placeholders
 workflowHistory:
-  # -- Storage mode: auto (upload when bucket set), gcs (always upload), inline (embed JSON)
-  storage: auto
-  # -- GCS bucket name for history JSON objects
-  bucket: ""
-  # -- Object path prefix inside the bucket (objects: {prefix}/{domain}/{date}/{workflow}_{run}_history.json)
-  prefix: workflow-history
-  # -- Mount a GCP service account JSON key for GCS uploads (alternative to Workload Identity)
-  gcsCredentials:
-    # -- Use an existing Kubernetes secret that contains the JSON key
-    existingSecret: ""
-    # -- Key name inside the secret (file mounted as key.json)
-    secretKey: "gcs-service-account.json"
-    # -- Directory where the key file is mounted in the backend container
-    mountPath: "/var/secrets/gcs"
+  storage: gcs
+  bucket: "slo"
+  prefix: "qa-mathnasium"
+#  gcsCredentials:
+#    # Option A: reference a secret you created manually (recommended)
+#    existingSecret: ""  # e.g. slo-dashboard-gcs-sa
+#    secretKey: "gcs-service-account.json"
+#    mountPath: "/var/secrets/gcs"
+    # Option B: helm --set-file secret.gcsServiceAccountJson=./math-phase2-bucket-sa.json
 
 # -- Secret values (sensitive environment variables)
 # These will be stored as a Kubernetes Secret and injected as env vars.
@@ -154,12 +146,9 @@ secret:
   # AWS_SESSION_TOKEN: ""
   # -- One-time admin setup key for RBAC bootstrap
   # Used by POST /api/rbac/setup-admin to create the initial admin user.
-  ADMIN_KEY: ""
-  # -- Optional GCP access token for GCS uploads (short-lived; prefer gcsServiceAccountJson or Workload Identity)
-  GCS_ACCESS_TOKEN: ""
-  # -- GCP service account JSON key contents (stored in release secret as gcs-service-account.json)
-  # Prefer workflowHistory.gcsCredentials.existingSecret for production. Use: helm upgrade --set-file secret.gcsServiceAccountJson=./key.json
-  gcsServiceAccountJson: ""
+  ADMIN_KEY: "YWRtaW5AMTIzCg=="
+  # -- Google OAuth Client ID (used by backend to verify ID tokens)
+  GOOGLE_CLIENT_ID: "3161893293-u35lum0ev7ofrcnb3jbmr2hhi8s7634s.apps.googleusercontent.com"
 
 # -- Horizontal Pod Autoscaler configuration
 autoscaling:
@@ -184,10 +173,15 @@ podDisruptionBudget:
   maxUnavailable: ""
 
 # -- Node selector for pod assignment
-nodeSelector: {}
+nodeSelector:
+  workload: argo-pool
 
 # -- Tolerations for pod assignment
-tolerations: []
+tolerations:
+  - key: workload
+    operator: Equal
+    value: argo-pool
+    effect: NoSchedule
 
 # -- Affinity for pod assignment
 affinity: {}
@@ -238,8 +232,7 @@ serviceAccount:
   # -- Annotations for the service account
   annotations: {}
   # -- The name of the service account to use
-  # If not set and create is true, a name is generated using the fullname template
-  name: ""
+  name: "slo"
   # -- Workload Identity configuration (GKE)
   workloadIdentity:
     # -- Enable GKE Workload Identity
