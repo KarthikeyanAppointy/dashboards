@@ -1,0 +1,146 @@
+{
+  "cli_version": "0.7.5",
+  "checkpoint_id": "3fc7acd7c594",
+  "session_id": "019ebb5d-cc5a-7d50-9574-5e66427bb031",
+  "strategy": "manual-commit",
+  "created_at": "2026-06-12T12:24:43.793471Z",
+  "branch": "pipeline-changes",
+  "checkpoints_count": 7,
+  "files_touched": [
+    "background-slo/backend/main.go",
+    "background-slo/frontend/src/App.jsx",
+    "background-slo/frontend/src/components/ActivityErrors.css",
+    "background-slo/frontend/src/components/ColumnVisibilityPicker.css",
+    "background-slo/frontend/src/components/ColumnVisibilityPicker.jsx",
+    "background-slo/frontend/src/components/P100LatencyByWorkflow.css",
+    "background-slo/frontend/src/components/RcaReportModal.css",
+    "background-slo/frontend/src/components/RcaReportModal.jsx",
+    "background-slo/frontend/src/components/RecentFailures.css",
+    "background-slo/frontend/src/components/RecentFailures.jsx",
+    "background-slo/frontend/src/components/Sidebar.jsx",
+    "background-slo/frontend/src/pages/PeoplesPage.css",
+    "background-slo/frontend/src/pages/PeoplesPage.jsx",
+    "background-slo/frontend/src/pages/PipelineErrorsPage.jsx",
+    "background-slo/frontend/src/pages/RecentFailuresPage.jsx",
+    "background-slo/frontend/src/pages/ReportHistoryPage.jsx"
+  ],
+  "agent": "Codex",
+  "model": "gpt-5.4",
+  "turn_id": "c9f65c56cba1",
+  "token_usage": {
+    "input_tokens": 650048,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 16110848,
+    "output_tokens": 102824,
+    "api_call_count": 152
+  },
+  "session_metrics": {
+    "turn_count": 7
+  },
+  "initial_attribution": {
+    "calculated_at": "2026-06-12T12:24:43.688865Z",
+    "agent_lines": 0,
+    "agent_removed": 330,
+    "human_added": 2783,
+    "human_modified": 26,
+    "human_removed": 0,
+    "total_committed": 2783,
+    "total_lines_changed": 3139,
+    "agent_percentage": 10.512902198152279,
+    "metric_version": 2
+  },
+  "prompt_attributions": [
+    {
+      "checkpoint_number": 1,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 0,
+      "agent_lines_removed": 0
+    },
+    {
+      "checkpoint_number": 2,
+      "user_lines_added": 0,
+      "user_lines_removed": 0,
+      "agent_lines_added": 128,
+      "agent_lines_removed": 25
+    },
+    {
+      "checkpoint_number": 3,
+      "user_lines_added": 1503,
+      "user_lines_removed": 26,
+      "agent_lines_added": 128,
+      "agent_lines_removed": 25,
+      "user_added_per_file": {
+        "background-slo/backend/main.go": 815,
+        "background-slo/frontend/src/App.jsx": 9,
+        "background-slo/frontend/src/components/RcaReportModal.css": 193,
+        "background-slo/frontend/src/components/RcaReportModal.jsx": 148,
+        "background-slo/frontend/src/components/RecentFailures.css": 67,
+        "background-slo/frontend/src/components/RecentFailures.jsx": 83,
+        "background-slo/frontend/src/pages/PeoplesPage.css": 1,
+        "background-slo/frontend/src/pages/PeoplesPage.jsx": 64,
+        "background-slo/frontend/src/pages/PipelineErrorsPage.jsx": 121,
+        "background-slo/frontend/src/pages/RecentFailuresPage.jsx": 2
+      },
+      "user_removed_per_file": {
+        "background-slo/backend/main.go": 19,
+        "background-slo/frontend/src/App.jsx": 1,
+        "background-slo/frontend/src/components/RecentFailures.css": 2,
+        "background-slo/frontend/src/components/RecentFailures.jsx": 2,
+        "background-slo/frontend/src/pages/PeoplesPage.css": 1,
+        "background-slo/frontend/src/pages/PipelineErrorsPage.jsx": 1
+      }
+    },
+    {
+      "checkpoint_number": 4,
+      "user_lines_added": 341,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2055,
+      "agent_lines_removed": 340,
+      "user_added_per_file": {
+        "background-slo/frontend/src/components/RcaReportModal.css": 193,
+        "background-slo/frontend/src/components/RcaReportModal.jsx": 148
+      }
+    },
+    {
+      "checkpoint_number": 5,
+      "user_lines_added": 193,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2321,
+      "agent_lines_removed": 347,
+      "user_added_per_file": {
+        "background-slo/frontend/src/components/RcaReportModal.css": 193
+      }
+    },
+    {
+      "checkpoint_number": 6,
+      "user_lines_added": 193,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2321,
+      "agent_lines_removed": 347,
+      "user_added_per_file": {
+        "background-slo/frontend/src/components/RcaReportModal.css": 193
+      }
+    },
+    {
+      "checkpoint_number": 7,
+      "user_lines_added": 193,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2372,
+      "agent_lines_removed": 347,
+      "user_added_per_file": {
+        "background-slo/frontend/src/components/RcaReportModal.css": 193
+      }
+    },
+    {
+      "checkpoint_number": 8,
+      "user_lines_added": 193,
+      "user_lines_removed": 0,
+      "agent_lines_added": 2371,
+      "agent_lines_removed": 356,
+      "user_added_per_file": {
+        "background-slo/frontend/src/components/RcaReportModal.css": 193
+      }
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+we need few features:
+- move pipeline requests section to Delivery section
+- add rbac for pipeline requests page so that we can provide access to this page to others too
+- remove pipeline tab from /report-history page
+
+---
+
+check whether this bg-slo has a webhook endpoint for someone to make api request or anything.
+
+---
+
+# Files mentioned by the user:
+
+## codex-clipboard-ddfedc8c-a7c9-400b-923c-8f0af35c7165.png: /var/folders/08/qj1b__kx0fl3sjbw422ddvw80000gn/T/codex-clipboard-ddfedc8c-a7c9-400b-923c-8f0af35c7165.png
+
+## My request for Codex:
+we need to make an endpoint in this project, so that we have a product called codefac, we can send the RCA report just like that to the endpoint, (earlier it used to send in the slack channel now we are shifting to bg-slo) so that we know rca result in the UI itself
+
+we need to update the http://localhost:5173/recent-failures, http://localhost:5173/pipeline-requests pages
+so that we can see all those triggered requests RCA when came in.
+
+we need to show customer impact in a separate column (and entire RCA result in popup window)
+so it would help the QA and Support team to understand the Impact, and developer to see the full RCA
+
+---
+
+# Files mentioned by the user:
+
+## codex-clipboard-ddfedc8c-a7c9-400b-923c-8f0af35c7165.png: /var/folders/08/qj1b__kx0fl3sjbw422ddvw80000gn/T/codex-clipboard-ddfedc8c-a7c9-400b-923c-8f0af35c7165.png
+## My request for Codex:
+we need to make an endpoint in this project, so that we have a product called codefac, we can send the RCA report just like that to the endpoint, (earlier it used to send in the slack channel now we are shifting to bg-slo) so that we know rca result in the UI itself
+
+we need to update the http://localhost:5173/recent-failures, http://localhost:5173/pipeline-requests pages
+so that we can see all those triggered requests RCA when came in. we also need to add security feature so that not any one can call it.
+
+we need to show customer impact in a separate column (and entire RCA result in popup window)
+so it would help the QA and Support team to understand the Impact, and developer to see the full RCA 
+(we also will be adding column filtering feature)
+add roles (QA & CEAM to the bg-slo) so that filters can auto selected for them when they open pages
+QA and CEAM mainly needs customer impact
+
+---
+
+1) all those columns we see in the UI should be filtered, so that we can skip few filters based on the who the person he is, whether he is developer or whether he is ceam/qa team.
+by default based on the role, we select few filters and keep remaining unchecked, if they want they can select them (manage UI state of filters so that if user refreshes dont loose them, just UI level state)
+example: do qa team need to know about workflow id and run id in the ui, not needed right (so we skip the column from UI, but they can select it from filter options) 
+2) all tell me what is the endpoint to call and with request body type, 
+provide me example request that we can make to bg-slo for any example failed workflow present in the db
+lets if tomorrow if rca comes, how does it would look like
+
+---
+
+1) edit the endpoint to get MR/PR also in the body so that developer can click it directly to open MR/PR
+2) show workflow type in two/three lines instead of one line, because it is taking full line in the UI, unable to see columns i am scrolling to see, also keep customer impact beside workflow type, show customer impact text full
+
+---
+
+give me example request for (delete the customer impact that you gave me for evt_01KSYGB78P4ZPX52J51P846D6Q2 from db) so that i will request again
+
+---
+
+for filtering check based on role, filters are auto selected when that person logs in, 
+so i want you set qa/ceam specific (customer related columns) and admin/user (developer, all i think)
+
+---
+
+# Files mentioned by the user:
+
+## codex-clipboard-29825e1b-aadc-429d-acae-c12397d0e086.png: /var/folders/08/qj1b__kx0fl3sjbw422ddvw80000gn/T/codex-clipboard-29825e1b-aadc-429d-acae-c12397d0e086.png
+
+## My request for Codex:
+1) why am i seeing rectangle box in the type column 
+2) also show workflow type in full length (in all the places)
