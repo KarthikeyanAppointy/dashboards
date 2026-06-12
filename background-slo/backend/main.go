@@ -262,7 +262,7 @@ func substituteWorkflowHistoryPlaceholders(payloadStr string, tenant *Tenant, wo
 		fetchErr = fmt.Errorf("cadence_web_url not configured for this tenant")
 	} else {
 		histCtx, histCancel := context.WithTimeout(context.Background(), 90*time.Second)
-		historyData, fetchErr = fetchWorkflowHistory(histCtx, tenant.CadenceWebURL, tenant.DomainName, workflowID, runID, "cluster0")
+		historyData, fetchErr = fetchWorkflowHistory(histCtx, tenant.CadenceWebURL, tenant.DomainName, workflowID, runID, "cluster0", tenant.AudienceURL)
 		histCancel()
 		if fetchErr != nil {
 			log.Printf("ERROR: fetch workflow history: %v", fetchErr)
@@ -3083,18 +3083,17 @@ func getGCPIdentityToken(audienceURL string) (string, error) {
 }
 
 // resolveESBaseURL returns the HTTP base URL for ES _msearch and whether GCP audience auth applies.
-// When audience_url is set, requests go to that URL with a Bearer token.
-// When audience_url is empty, requests go directly to es_endpoint (optionally with x-api-key).
+// The request always goes to es_endpoint; when audience_url is set, a GCP identity Bearer token is used.
+// When audience_url is empty, requests fall back to x-api-key auth.
 func resolveESBaseURL(cfg Config) (baseURL string, useAudienceAuth bool, err error) {
 	es := strings.TrimRight(strings.TrimSpace(cfg.ES), "/")
-	audience := strings.TrimRight(strings.TrimSpace(cfg.AudienceURL), "/")
-	if audience != "" {
-		return audience, true, nil
-	}
 	if es == "" {
 		return "", false, fmt.Errorf("es_endpoint not configured")
 	}
-	return es, false, nil
+	if !strings.HasPrefix(es, "http://") && !strings.HasPrefix(es, "https://") {
+		es = "https://" + es
+	}
+	return es, cfg.AudienceURL != "", nil
 }
 
 func queryElasticsearch(cfg Config, limit int, tasklistWindow int64, statusFilter []int, tasklistFilter []string, fromNanos, toNanos int64, offset int, activityErrorField string, activityStatusConditions []int, activityErrorDetailField string) (*esMultiSearchResponse, error) {
@@ -3600,7 +3599,7 @@ func syncWorkflowFailureHit(ctx context.Context, tenant *Tenant, hit esHit) erro
 		stored.HistoryFetchError = "cadence_web_url not configured"
 	} else {
 		histCtx, cancel := context.WithTimeout(ctx, workflowFailureHistoryFetchTimout)
-		historyData, err := fetchWorkflowHistory(histCtx, tenant.CadenceWebURL, tenant.DomainName, src.WorkflowID, src.RunID, "cluster0")
+		historyData, err := fetchWorkflowHistory(histCtx, tenant.CadenceWebURL, tenant.DomainName, src.WorkflowID, src.RunID, "cluster0", tenant.AudienceURL)
 		cancel()
 		if err != nil {
 			stored.HistoryFetchError = err.Error()
@@ -8198,19 +8197,24 @@ func parseHistoryPageBody(body []byte) ([]json.RawMessage, string, error) {
 }
 
 // fetchWorkflowHistoryPage fetches one page of workflow history from a Cadence Web URL.
-func fetchWorkflowHistoryPage(ctx context.Context, requestURL string) ([]json.RawMessage, string, error) {
+func fetchWorkflowHistoryPage(ctx context.Context, requestURL string, audienceURL string) ([]json.RawMessage, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("create history request: %w", err)
 	}
-
+	if audienceURL != "" {
+		token, err := getGCPIdentityToken(audienceURL)
+		if err != nil {
+			return nil, "", fmt.Errorf("GCP identity token for audience %s: %w", audienceURL, err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("fetch history: %w", err)
 	}
 	defer resp.Body.Close()
-
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
 		return nil, "", fmt.Errorf("read history: %w", err)
@@ -8223,16 +8227,14 @@ func fetchWorkflowHistoryPage(ctx context.Context, requestURL string) ([]json.Ra
 		log.Printf("ERROR: cadence web history HTTP %d url=%s body=%s", resp.StatusCode, requestURL, snippet)
 		return nil, "", fmt.Errorf("cadence web history HTTP %d: %s", resp.StatusCode, snippet)
 	}
-
 	return parseHistoryPageBody(body)
 }
 
 // fetchWorkflowHistoryAllPages downloads all history pages using pageSize + nextPageToken.
-func fetchWorkflowHistoryAllPages(ctx context.Context, basePath string) ([]json.RawMessage, error) {
+func fetchWorkflowHistoryAllPages(ctx context.Context, basePath string, audienceURL string) ([]json.RawMessage, error) {
 	var allEvents []json.RawMessage
 	nextPageToken := ""
 	seenTokens := map[string]struct{}{"": {}}
-
 	for page := 0; page < maxWorkflowHistoryPages; page++ {
 		q := url.Values{}
 		q.Set("pageSize", strconv.Itoa(workflowHistoryPageSize))
@@ -8240,13 +8242,11 @@ func fetchWorkflowHistoryAllPages(ctx context.Context, basePath string) ([]json.
 			q.Set("nextPageToken", nextPageToken)
 		}
 		requestURL := basePath + "?" + q.Encode()
-
-		events, token, err := fetchWorkflowHistoryPage(ctx, requestURL)
+		events, token, err := fetchWorkflowHistoryPage(ctx, requestURL, audienceURL)
 		if err != nil {
 			return nil, err
 		}
 		allEvents = append(allEvents, events...)
-
 		if token == "" {
 			break
 		}
@@ -8257,7 +8257,6 @@ func fetchWorkflowHistoryAllPages(ctx context.Context, basePath string) ([]json.
 		seenTokens[token] = struct{}{}
 		nextPageToken = token
 	}
-
 	if len(allEvents) == 0 {
 		return nil, fmt.Errorf("no history events returned from %s", basePath)
 	}
@@ -8266,7 +8265,7 @@ func fetchWorkflowHistoryAllPages(ctx context.Context, basePath string) ([]json.
 
 // fetchWorkflowHistory downloads all pages of workflow execution history from Cadence web.
 // Tries cluster-scoped API first, then legacy v1 path.
-func fetchWorkflowHistory(ctx context.Context, cadenceWebURL, domain, workflowID, runID, cluster string) ([]byte, error) {
+func fetchWorkflowHistory(ctx context.Context, cadenceWebURL, domain, workflowID, runID, cluster, audienceURL string) ([]byte, error) {
 	if cluster == "" {
 		cluster = "cluster0"
 	}
@@ -8277,18 +8276,16 @@ func fetchWorkflowHistory(ctx context.Context, cadenceWebURL, domain, workflowID
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
 		baseURL = "http://" + baseURL
 	}
-
 	paths := []string{
 		fmt.Sprintf("%s/api/domains/%s/%s/workflows/%s/%s/history",
 			baseURL, url.PathEscape(domain), url.PathEscape(cluster), url.PathEscape(workflowID), url.PathEscape(runID)),
 		fmt.Sprintf("%s/api/v1/domains/%s/workflows/%s/%s/history",
 			baseURL, url.PathEscape(domain), url.PathEscape(workflowID), url.PathEscape(runID)),
 	}
-
 	var allEvents []json.RawMessage
 	var errs []string
 	for _, path := range paths {
-		events, err := fetchWorkflowHistoryAllPages(ctx, path)
+		events, err := fetchWorkflowHistoryAllPages(ctx, path, audienceURL)
 		if err == nil && len(events) > 0 {
 			allEvents = events
 			break
@@ -8306,7 +8303,6 @@ func fetchWorkflowHistory(ctx context.Context, cadenceWebURL, domain, workflowID
 		}
 		return nil, fmt.Errorf("no workflow history returned (check cadence_web_url, domain, and cluster)")
 	}
-
 	output, err := json.Marshal(map[string]interface{}{
 		"workflow_id": workflowID,
 		"run_id":      runID,
@@ -8365,7 +8361,7 @@ func workflowHistoryHandler(w http.ResponseWriter, r *http.Request) {
 		tenantID, tenant.DomainName, workflowID, runID, tenant.CadenceWebURL)
 
 	userEmail := sessionEmailFromRequest(r)
-	historyData, err := fetchWorkflowHistory(ctx, tenant.CadenceWebURL, tenant.DomainName, workflowID, runID, cluster)
+	historyData, err := fetchWorkflowHistory(ctx, tenant.CadenceWebURL, tenant.DomainName, workflowID, runID, cluster, tenant.AudienceURL)
 	if err != nil {
 		log.Printf("ERROR: fetch workflow history tenant=%d user=%s workflow=%s/%s cadence=%s: %v",
 			tenantID, userEmail, workflowID, runID, tenant.CadenceWebURL, err)
