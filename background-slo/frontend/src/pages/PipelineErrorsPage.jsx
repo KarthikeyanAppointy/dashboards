@@ -1,8 +1,13 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "../auth/AuthContext";
+import RcaReportModal from "../components/RcaReportModal";
+import ColumnVisibilityPicker from "../components/ColumnVisibilityPicker";
 import "./NotificationsPage.css";
 
 const PIPELINE_REQUESTS_TAB_STORAGE_KEY = "background-slo.pipeline-requests.tab";
+const PIPELINE_IMPACT_STORAGE_KEY =
+  "background-slo.pipeline-requests.impact-only";
+const PIPELINE_COLUMNS_STORAGE_KEY = "background-slo.pipeline-requests.columns";
 
 const FILTER_OPTIONS = [
   { key: "all", label: "All" },
@@ -25,6 +30,44 @@ const MANUAL_FILTER_OPTIONS = [
   { key: "sent", label: "Sent" },
   { key: "failed", label: "Failed" },
 ];
+
+const PIPELINE_COLUMN_OPTIONS = [
+  { key: "timestamp", label: "Timestamp" },
+  { key: "pipeline", label: "Pipeline" },
+  { key: "status", label: "Status" },
+  { key: "workflowType", label: "Workflow Type" },
+  { key: "error", label: "Error" },
+  { key: "customerImpact", label: "Customer Impact" },
+  { key: "workflowRun", label: "Workflow / Run" },
+  { key: "requestType", label: "Request Type" },
+];
+
+function usesCustomerPreset(persona, role) {
+  const normalizedPersona = String(persona || "").toLowerCase();
+  if (normalizedPersona === "qa" || normalizedPersona === "ceam") {
+    return true;
+  }
+  const normalizedRole = String(role || "").toLowerCase();
+  if (normalizedRole === "admin" || normalizedRole === "user") {
+    return false;
+  }
+  return normalizedPersona !== "developer" && normalizedPersona !== "";
+}
+
+function defaultPipelineColumns(persona, role) {
+  if (usesCustomerPreset(persona, role)) {
+    return [
+      "timestamp",
+      "pipeline",
+      "status",
+      "workflowType",
+      "error",
+      "customerImpact",
+    ];
+  }
+
+  return PIPELINE_COLUMN_OPTIONS.map((option) => option.key);
+}
 
 const STATUS_LABELS = {
   pending: "Pending",
@@ -95,7 +138,7 @@ function statusTone(status) {
   }
 }
 
-function PipelineErrorsPage({ selectedTenantId }) {
+function PipelineErrorsPage({ selectedTenantId, userPersona, userRole }) {
   const { authFetch } = useAuth();
   const [requestSource, setRequestSource] = useState(() => {
     if (typeof window === "undefined") return "es";
@@ -108,6 +151,26 @@ function PipelineErrorsPage({ selectedTenantId }) {
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
+  const [impactOnly, setImpactOnly] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(PIPELINE_IMPACT_STORAGE_KEY) === "true";
+  });
+  const [visibleColumns, setVisibleColumns] = useState(() => {
+    if (typeof window === "undefined") {
+      return defaultPipelineColumns("developer", "user");
+    }
+    try {
+      const saved = JSON.parse(
+        window.localStorage.getItem(PIPELINE_COLUMNS_STORAGE_KEY) || "null",
+      );
+      return Array.isArray(saved)
+        ? saved
+        : defaultPipelineColumns("developer", "user");
+    } catch {
+      return defaultPipelineColumns("developer", "user");
+    }
+  });
+  const [selectedRca, setSelectedRca] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -175,6 +238,104 @@ function PipelineErrorsPage({ selectedTenantId }) {
     }
   }, [requestSource]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const requiresImpactDefault = usesCustomerPreset(userPersona, userRole);
+    const saved = window.localStorage.getItem(PIPELINE_IMPACT_STORAGE_KEY);
+    if (requiresImpactDefault && saved !== "true") {
+      setImpactOnly(true);
+      window.localStorage.setItem(PIPELINE_IMPACT_STORAGE_KEY, "true");
+      return;
+    }
+    if (!requiresImpactDefault && saved !== null) {
+      setImpactOnly(saved === "true");
+    }
+  }, [userPersona]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        PIPELINE_IMPACT_STORAGE_KEY,
+        String(impactOnly),
+      );
+    }
+  }, [impactOnly]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.localStorage.getItem(PIPELINE_COLUMNS_STORAGE_KEY);
+    if (!saved) {
+      const defaults = defaultPipelineColumns(
+        userPersona || "developer",
+        userRole || "user",
+      );
+      setVisibleColumns(defaults);
+      window.localStorage.setItem(
+        PIPELINE_COLUMNS_STORAGE_KEY,
+        JSON.stringify(defaults),
+      );
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(saved);
+      if (!Array.isArray(parsed)) return;
+      const allowed = new Set(PIPELINE_COLUMN_OPTIONS.map((option) => option.key));
+      const sanitized = parsed.filter((key) => allowed.has(key));
+      const nextVisible =
+        sanitized.length > 0
+          ? sanitized
+          : defaultPipelineColumns(
+              userPersona || "developer",
+              userRole || "user",
+            );
+      setVisibleColumns(nextVisible);
+      window.localStorage.setItem(
+        PIPELINE_COLUMNS_STORAGE_KEY,
+        JSON.stringify(nextVisible),
+      );
+    } catch {
+      const defaults = defaultPipelineColumns(
+        userPersona || "developer",
+        userRole || "user",
+      );
+      setVisibleColumns(defaults);
+      window.localStorage.setItem(
+        PIPELINE_COLUMNS_STORAGE_KEY,
+        JSON.stringify(defaults),
+      );
+    }
+  }, [userPersona, userRole]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        PIPELINE_COLUMNS_STORAGE_KEY,
+        JSON.stringify(visibleColumns),
+      );
+    }
+  }, [visibleColumns]);
+
+  const showColumn = (key) => visibleColumns.includes(key);
+
+  const toggleColumn = (key) => {
+    setVisibleColumns((current) => {
+      const isVisible = current.includes(key);
+      if (isVisible && current.length === 1) {
+        return current;
+      }
+      return isVisible
+        ? current.filter((columnKey) => columnKey !== key)
+        : [...current, key];
+    });
+  };
+
+  const resetColumns = () => {
+    setVisibleColumns(
+      defaultPipelineColumns(userPersona || "developer", userRole || "user"),
+    );
+  };
+
   const activeRows = requestSource === "manual" ? manualRequests : esFailures;
   const activeFilterOptions =
     requestSource === "manual" ? MANUAL_FILTER_OPTIONS : FILTER_OPTIONS;
@@ -182,6 +343,9 @@ function PipelineErrorsPage({ selectedTenantId }) {
   const searchValue = search.trim().toLowerCase();
   const filteredFailures = activeRows.filter((failure) => {
     if (filter !== "all" && failure.status !== filter) {
+      return false;
+    }
+    if (impactOnly && !failure.has_customer_impact) {
       return false;
     }
     if (!searchValue) {
@@ -194,6 +358,9 @@ function PipelineErrorsPage({ selectedTenantId }) {
       failure.run_id,
       failure.error_text,
       failure.error_message,
+      failure.customer_impact_summary,
+      failure.customer_impact_details,
+      failure.rca_summary,
       failure.matched_workflow_id,
       failure.matched_run_id,
     ]
@@ -229,6 +396,9 @@ function PipelineErrorsPage({ selectedTenantId }) {
 
   return (
     <div className="alerts-page">
+      {selectedRca && (
+        <RcaReportModal record={selectedRca} onClose={() => setSelectedRca(null)} />
+      )}
       <section className="alerts-section card-surface">
         <div className="section-header">
           <div>
@@ -315,6 +485,18 @@ function PipelineErrorsPage({ selectedTenantId }) {
               {option.label}
             </button>
           ))}
+          <button
+            className={`filter-chip${impactOnly ? " active" : ""}`}
+            onClick={() => setImpactOnly((current) => !current)}
+          >
+            Customer impact only
+          </button>
+          <ColumnVisibilityPicker
+            options={PIPELINE_COLUMN_OPTIONS}
+            visibleKeys={visibleColumns}
+            onToggle={toggleColumn}
+            onReset={resetColumns}
+          />
           <input
             type="search"
             className="alerts-input"
@@ -354,13 +536,16 @@ function PipelineErrorsPage({ selectedTenantId }) {
             <table className="alerts-history-table">
               <thead>
                 <tr>
-                  <th>Timestamp</th>
-                  <th>Pipeline</th>
-                  <th>Status</th>
-                  <th>Workflow Type</th>
-                  <th>Error</th>
-                  <th>Workflow / Run</th>
-                  <th>{requestSource === "manual" ? "Request Type" : "Matched Request"}</th>
+                  {showColumn("timestamp") && <th>Timestamp</th>}
+                  {showColumn("pipeline") && <th>Pipeline</th>}
+                  {showColumn("status") && <th>Status</th>}
+                  {showColumn("workflowType") && <th>Workflow Type</th>}
+                  {showColumn("customerImpact") && <th>Customer Impact</th>}
+                  {showColumn("error") && <th>Error</th>}
+                  {showColumn("workflowRun") && <th>Workflow / Run</th>}
+                  {showColumn("requestType") && (
+                    <th>{requestSource === "manual" ? "Request Type" : "Matched Request"}</th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -368,152 +553,72 @@ function PipelineErrorsPage({ selectedTenantId }) {
                   const tone = statusTone(failure.status);
                   return (
                     <tr key={failure.id}>
-                      <td className="alerts-history-cell-time">
-                        {formatTimestamp(
-                          failure.processed_at ||
-                            failure.triggered_at ||
-                            failure.updated_at,
-                        )}
-                      </td>
-                      <td style={{ fontSize: 12 }}>
-                        <div>{failure.pipeline_name || "Unknown pipeline"}</div>
-                        {failure.delivery_status && (
-                          <div
-                            style={{
-                              fontSize: 11,
-                              color: "var(--fg-tertiary)",
-                              marginTop: 4,
-                            }}
-                          >
-                            Delivery: {failure.delivery_status}
-                          </div>
-                        )}
-                      </td>
-                      <td>
-                        <span
-                          style={{
-                            display: "inline-block",
-                            padding: "2px 8px",
-                            borderRadius: 10,
-                            fontSize: 10,
-                            fontWeight: 600,
-                            textTransform: "uppercase",
-                            background: tone.background,
-                            color: tone.color,
-                          }}
-                        >
-                          {STATUS_LABELS[failure.status] || failure.status}
-                        </span>
-                      </td>
-                      <td style={{ fontSize: 12 }}>
-                        <code
-                          style={{
-                            fontSize: 10,
-                            fontFamily: '"SF Mono", monospace',
-                          }}
-                        >
-                          {failure.workflow_type || "unknown"}
-                        </code>
-                        <div
-                          style={{
-                            marginTop: 4,
-                            color: "var(--fg-tertiary)",
-                            fontSize: 11,
-                          }}
-                        >
-                          Source: {failure.source_status || "unknown"}
-                        </div>
-                        {requestSource === "es" && failure.trigger_attempts > 0 && (
-                          <div
-                            style={{
-                              marginTop: 4,
-                              color: "var(--fg-tertiary)",
-                              fontSize: 11,
-                            }}
-                          >
-                            Attempts: {failure.trigger_attempts}
-                          </div>
-                        )}
-                      </td>
-                      <td style={{ fontSize: 12, minWidth: 260 }}>
-                        <div
-                          title={failure.error_text || "Unknown error"}
-                          style={{
-                            display: "-webkit-box",
-                            WebkitLineClamp: 2,
-                            WebkitBoxOrient: "vertical",
-                            overflow: "hidden",
-                            whiteSpace: "normal",
-                            lineHeight: 1.4,
-                          }}
-                        >
-                          {clampText(failure.error_text || "Unknown error", 220)}
-                        </div>
-                        {failure.error_message && (
-                          <div
-                            title={failure.error_message}
-                            style={{
-                              fontSize: 11,
-                              color: "var(--danger, #d32f2f)",
-                              marginTop: 4,
-                              display: "-webkit-box",
-                              WebkitLineClamp: 2,
-                              WebkitBoxOrient: "vertical",
-                              overflow: "hidden",
-                              whiteSpace: "normal",
-                              lineHeight: 1.35,
-                            }}
-                          >
-                            {clampText(failure.error_message, 180)}
-                          </div>
-                        )}
-                      </td>
-                      <td style={{ fontSize: 12 }}>
-                        <div>
-                          <code
-                            style={{
-                              fontSize: 10,
-                              fontFamily: '"SF Mono", monospace',
-                            }}
-                          >
-                            {failure.workflow_id || "-"}
-                          </code>
-                        </div>
-                        <div
-                          style={{
-                            marginTop: 4,
-                            color: "var(--fg-tertiary)",
-                            fontSize: 11,
-                          }}
-                        >
-                          Run:{" "}
-                          <code
-                            style={{
-                              fontSize: 10,
-                              fontFamily: '"SF Mono", monospace',
-                            }}
-                          >
-                            {failure.run_id || "-"}
-                          </code>
-                        </div>
-                      </td>
-                      <td style={{ fontSize: 12 }}>
-                        {requestSource === "manual" ? (
-                          <span style={{ color: "var(--fg-tertiary)" }}>
-                            Manual trigger
-                          </span>
-                        ) : failure.matched_workflow_id ? (
-                          <>
-                            <div>
-                              <code
-                                style={{
-                                  fontSize: 10,
-                                  fontFamily: '"SF Mono", monospace',
-                                }}
-                              >
-                                {failure.matched_workflow_id}
-                              </code>
+                      {showColumn("timestamp") && (
+                        <td className="alerts-history-cell-time">
+                          {formatTimestamp(
+                            failure.processed_at ||
+                              failure.triggered_at ||
+                              failure.updated_at,
+                          )}
+                        </td>
+                      )}
+                      {showColumn("pipeline") && (
+                        <td style={{ fontSize: 12 }}>
+                          <div>{failure.pipeline_name || "Unknown pipeline"}</div>
+                          {failure.delivery_status && (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: "var(--fg-tertiary)",
+                                marginTop: 4,
+                              }}
+                            >
+                              Delivery: {failure.delivery_status}
                             </div>
+                          )}
+                        </td>
+                      )}
+                      {showColumn("status") && (
+                        <td>
+                          <span
+                            style={{
+                              display: "inline-block",
+                              padding: "2px 8px",
+                              borderRadius: 10,
+                              fontSize: 10,
+                              fontWeight: 600,
+                              textTransform: "uppercase",
+                              background: tone.background,
+                              color: tone.color,
+                            }}
+                          >
+                            {STATUS_LABELS[failure.status] || failure.status}
+                          </span>
+                        </td>
+                      )}
+                      {showColumn("workflowType") && (
+                        <td style={{ fontSize: 12, minWidth: 220 }}>
+                          <div
+                            style={{
+                              fontSize: 11.5,
+                              whiteSpace: "normal",
+                              overflowWrap: "anywhere",
+                              wordBreak: "break-word",
+                              lineHeight: 1.45,
+                            }}
+                          >
+                            {failure.workflow_type || "unknown"}
+                          </div>
+                          <div
+                            style={{
+                              marginTop: 4,
+                              color: "var(--fg-tertiary)",
+                              fontSize: 11,
+                            }}
+                          >
+                            Source: {failure.source_status || "unknown"}
+                          </div>
+                          {requestSource === "es" && failure.trigger_attempts > 0 && (
                             <div
                               style={{
                                 marginTop: 4,
@@ -521,17 +626,196 @@ function PipelineErrorsPage({ selectedTenantId }) {
                                 fontSize: 11,
                               }}
                             >
-                              Run:{" "}
-                              <code
+                              Attempts: {failure.trigger_attempts}
+                            </div>
+                          )}
+                        </td>
+                      )}
+                      {showColumn("customerImpact") && (
+                        <td style={{ fontSize: 12, minWidth: 250 }}>
+                          {failure.has_rca ? (
+                            <div
+                              style={{
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: 6,
+                                alignItems: "flex-start",
+                              }}
+                            >
+                              <span
                                 style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  minHeight: 20,
+                                  padding: "0 8px",
+                                  borderRadius: 999,
+                                  background: failure.has_customer_impact
+                                    ? "color-mix(in srgb, var(--warning-bg) 72%, var(--surface))"
+                                    : "var(--surface-secondary)",
+                                  color: failure.has_customer_impact
+                                    ? "var(--warning-fg)"
+                                    : "var(--fg-secondary)",
                                   fontSize: 10,
-                                  fontFamily: '"SF Mono", monospace',
+                                  fontWeight: 700,
+                                  textTransform: "uppercase",
+                                  letterSpacing: "0.05em",
                                 }}
                               >
-                                {failure.matched_run_id || "-"}
-                              </code>
+                                {failure.has_customer_impact
+                                  ? "Customer impact"
+                                  : "No impact noted"}
+                              </span>
+                              <div
+                                title={
+                                  failure.customer_impact_details ||
+                                  failure.rca_summary ||
+                                  ""
+                                }
+                                style={{
+                                  color: "var(--fg-secondary)",
+                                  lineHeight: 1.45,
+                                  whiteSpace: "normal",
+                                  wordBreak: "break-word",
+                                }}
+                              >
+                                {failure.customer_impact_details ||
+                                  failure.customer_impact_summary ||
+                                  failure.rca_summary ||
+                                  "Open the RCA report for details."}
+                              </div>
+                              <div
+                                style={{
+                                  display: "flex",
+                                  flexWrap: "wrap",
+                                  gap: 8,
+                                }}
+                              >
+                                <button
+                                  type="button"
+                                  className="filter-chip"
+                                  style={{
+                                    height: 24,
+                                    padding: "0 10px",
+                                    borderRadius: 12,
+                                  }}
+                                  onClick={() => setSelectedRca(failure)}
+                                >
+                                  View RCA
+                                </button>
+                                {failure.open_mr_url && (
+                                  <a
+                                    className="filter-chip"
+                                    href={failure.open_mr_url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    style={{
+                                      height: 24,
+                                      padding: "0 10px",
+                                      borderRadius: 12,
+                                      display: "inline-flex",
+                                      alignItems: "center",
+                                      textDecoration: "none",
+                                    }}
+                                  >
+                                    {failure.open_mr_label &&
+                                    failure.open_mr_label !== failure.open_mr_url
+                                      ? failure.open_mr_label
+                                      : "Open MR/PR"}
+                                  </a>
+                                )}
+                              </div>
                             </div>
-                            {failure.matched_triggered_at && (
+                          ) : (
+                            <span style={{ color: "var(--fg-tertiary)" }}>
+                              No RCA yet
+                            </span>
+                          )}
+                        </td>
+                      )}
+                      {showColumn("error") && (
+                        <td style={{ fontSize: 12, minWidth: 240 }}>
+                          <div
+                            title={failure.error_text || "Unknown error"}
+                            style={{
+                              display: "-webkit-box",
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: "vertical",
+                              overflow: "hidden",
+                              whiteSpace: "normal",
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            {clampText(failure.error_text || "Unknown error", 220)}
+                          </div>
+                          {failure.error_message && (
+                            <div
+                              title={failure.error_message}
+                              style={{
+                                fontSize: 11,
+                                color: "var(--danger, #d32f2f)",
+                                marginTop: 4,
+                                display: "-webkit-box",
+                                WebkitLineClamp: 2,
+                                WebkitBoxOrient: "vertical",
+                                overflow: "hidden",
+                                whiteSpace: "normal",
+                                lineHeight: 1.35,
+                              }}
+                            >
+                              {clampText(failure.error_message, 180)}
+                            </div>
+                          )}
+                        </td>
+                      )}
+                      {showColumn("workflowRun") && (
+                        <td style={{ fontSize: 12 }}>
+                          <div>
+                            <code
+                              style={{
+                                fontSize: 10,
+                                fontFamily: '"SF Mono", monospace',
+                              }}
+                            >
+                              {failure.workflow_id || "-"}
+                            </code>
+                          </div>
+                          <div
+                            style={{
+                              marginTop: 4,
+                              color: "var(--fg-tertiary)",
+                              fontSize: 11,
+                            }}
+                          >
+                            Run:{" "}
+                            <code
+                              style={{
+                                fontSize: 10,
+                                fontFamily: '"SF Mono", monospace',
+                              }}
+                            >
+                              {failure.run_id || "-"}
+                            </code>
+                          </div>
+                        </td>
+                      )}
+                      {showColumn("requestType") && (
+                        <td style={{ fontSize: 12 }}>
+                          {requestSource === "manual" ? (
+                            <span style={{ color: "var(--fg-tertiary)" }}>
+                              Manual trigger
+                            </span>
+                          ) : failure.matched_workflow_id ? (
+                            <>
+                              <div>
+                                <code
+                                  style={{
+                                    fontSize: 10,
+                                    fontFamily: '"SF Mono", monospace',
+                                  }}
+                                >
+                                  {failure.matched_workflow_id}
+                                </code>
+                              </div>
                               <div
                                 style={{
                                   marginTop: 4,
@@ -539,15 +823,34 @@ function PipelineErrorsPage({ selectedTenantId }) {
                                   fontSize: 11,
                                 }}
                               >
-                                Triggered at{" "}
-                                {formatTimestamp(failure.matched_triggered_at)}
+                                Run:{" "}
+                                <code
+                                  style={{
+                                    fontSize: 10,
+                                    fontFamily: '"SF Mono", monospace',
+                                  }}
+                                >
+                                  {failure.matched_run_id || "-"}
+                                </code>
                               </div>
-                            )}
-                          </>
-                        ) : (
-                          <span style={{ color: "var(--fg-tertiary)" }}>-</span>
-                        )}
-                      </td>
+                              {failure.matched_triggered_at && (
+                                <div
+                                  style={{
+                                    marginTop: 4,
+                                    color: "var(--fg-tertiary)",
+                                    fontSize: 11,
+                                  }}
+                                >
+                                  Triggered at{" "}
+                                  {formatTimestamp(failure.matched_triggered_at)}
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <span style={{ color: "var(--fg-tertiary)" }}>-</span>
+                          )}
+                        </td>
+                      )}
                     </tr>
                   );
                 })}

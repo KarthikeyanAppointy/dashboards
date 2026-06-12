@@ -14,7 +14,7 @@ function ReportHistoryPage({ selectedTenantId }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [filter, setFilter] = useState("all"); // "all", "report", "pipeline", "alert"
+  const [filter, setFilter] = useState("all"); // "all", "report", "alert"
 
   const qs = useCallback(
     (extra) => {
@@ -45,8 +45,7 @@ function ReportHistoryPage({ selectedTenantId }) {
       const entries = Array.isArray(json)
         ? json
         : (json.results ?? json.history ?? []);
-      // Include all entries (alerts, reports, and pipelines)
-      setData(entries);
+      setData(entries.filter((entry) => entry.channel !== "pipeline"));
     } catch (err) {
       setError(err.message);
     } finally {
@@ -86,8 +85,7 @@ function ReportHistoryPage({ selectedTenantId }) {
           <div>
             <h2 className="section-title">Notification History</h2>
             <p className="section-subtitle">
-              History of triggered alerts, scheduled reports, and pipeline
-              executions.
+              History of triggered alerts and scheduled reports.
             </p>
           </div>
         </div>
@@ -114,7 +112,7 @@ function ReportHistoryPage({ selectedTenantId }) {
           >
             Filter
           </span>
-          {["all", "alert", "report", "pipeline"].map((f) => (
+          {["all", "alert", "report"].map((f) => (
             <button
               key={f}
               className={`filter-chip${filter === f ? " active" : ""}`}
@@ -138,9 +136,7 @@ function ReportHistoryPage({ selectedTenantId }) {
                 ? "All"
                 : f === "alert"
                   ? "Alerts"
-                  : f === "report"
-                    ? "Scheduled Reports"
-                    : "Pipelines"}
+                  : "Scheduled Reports"}
             </button>
           ))}
         </div>

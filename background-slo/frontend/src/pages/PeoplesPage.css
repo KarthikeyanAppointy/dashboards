@@ -434,7 +434,7 @@
     cursor: pointer;
     transition: background 0.1s ease, color 0.1s ease;
 }
-.pp-role-btn:first-child { border-right: 1px solid var(--border); }
+.pp-role-btn:not(:last-child) { border-right: 1px solid var(--border); }
 .pp-role-btn:hover:not(.active):not(:disabled) {
     background: var(--surface-secondary);
     color: var(--fg);

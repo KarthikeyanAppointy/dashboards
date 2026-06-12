@@ -1,0 +1,114 @@
+.cvp-container {
+    position: relative;
+}
+
+.cvp-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: var(--control-height);
+    padding: 0 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--fg-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.cvp-trigger:hover,
+.cvp-trigger.open {
+    background: var(--surface-secondary);
+    color: var(--fg);
+}
+
+.cvp-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 16px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--accent-bg);
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.cvp-panel {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 220;
+    min-width: 220px;
+    max-width: 280px;
+    padding: 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    box-shadow: var(--shadow-dropdown);
+}
+
+.cvp-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.cvp-title {
+    font-size: 10.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-tertiary);
+}
+
+.cvp-reset {
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.cvp-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.cvp-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 30px;
+    padding: 0 8px;
+    border-radius: var(--radius-sm);
+    color: var(--fg-secondary);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.cvp-item:hover {
+    background: var(--surface-secondary);
+}
+
+.cvp-item.checked {
+    background: var(--accent-bg);
+    color: var(--accent);
+}
+
+.cvp-item input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}

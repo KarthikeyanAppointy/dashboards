@@ -24,10 +24,23 @@ const SIDEBAR_SECTIONS = [
   { key: "activity-errors", label: "Activity Errors" },
   { key: "p100-latency", label: "P100 Latency" },
   { key: "ses", label: "SES Dashboard" },
+  { key: "pipeline-requests", label: "Pipeline Requests" },
   { key: "notifications", label: "Notifications" },
   { key: "report-history", label: "Reports" },
   { key: "peoples", label: "People" },
 ];
+
+const PERSONA_OPTIONS = [
+  { key: "developer", label: "Developer" },
+  { key: "qa", label: "QA" },
+  { key: "ceam", label: "CEAM" },
+];
+
+function samePermissions(left = [], right = []) {
+  if (left.length !== right.length) return false;
+  const leftSet = new Set(left);
+  return right.every((permission) => leftSet.has(permission));
+}
 
 /* ── Avatar helper ─────────────────────────────────────────── */
 function Avatar({ user, size = 32 }) {
@@ -60,23 +73,36 @@ function DetailPanel({
   saving,
   assigning,
   onRoleChange,
+  onPersonaChange,
   onAssign,
+  onPermissionsSave,
   onRemoveTenant,
 }) {
   const [showAssign, setShowAssign] = useState(false);
   const [assignTenantId, setAssignTenantId] = useState("");
   const [permissions, setPermissions] = useState([]);
+  const [selectedPermissions, setSelectedPermissions] = useState(
+    user.permissions || [],
+  );
 
   // reset assign form when user changes
   useEffect(() => {
     setShowAssign(false);
     setAssignTenantId("");
     setPermissions([]);
-  }, [user.user_email]);
+    setSelectedPermissions(user.permissions || []);
+  }, [user.permissions, user.user_email]);
 
   const togglePerm = (key) =>
     setPermissions((p) =>
       p.includes(key) ? p.filter((x) => x !== key) : [...p, key],
+    );
+
+  const toggleSelectedPerm = (key) =>
+    setSelectedPermissions((current) =>
+      current.includes(key)
+        ? current.filter((permission) => permission !== key)
+        : [...current, key],
     );
 
   const handleAssignSubmit = async () => {
@@ -86,6 +112,11 @@ function DetailPanel({
     setAssignTenantId("");
     setPermissions([]);
   };
+
+  const hasPermissionChanges = !samePermissions(
+    selectedPermissions,
+    user.permissions || [],
+  );
 
   const assignableTenants = allTenants.filter(
     (t) =>
@@ -148,6 +179,80 @@ function DetailPanel({
           >
             {user.role === "admin" ? "Admin" : "User"}
           </span>
+        )}
+      </div>
+
+      <div className="pp-detail-section">
+        <span className="pp-detail-section-label">Persona</span>
+        {isAdmin ? (
+          <div className="pp-role-toggle">
+            {PERSONA_OPTIONS.map((option) => (
+              <button
+                key={option.key}
+                className={`pp-role-btn${(user.persona || "developer") === option.key ? " active" : ""}`}
+                onClick={() =>
+                  (user.persona || "developer") !== option.key &&
+                  onPersonaChange(user.user_email, option.key)
+                }
+                disabled={saving}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <span className="pp-role-badge">
+            {PERSONA_OPTIONS.find(
+              (option) => option.key === (user.persona || "developer"),
+            )?.label || "Developer"}
+          </span>
+        )}
+      </div>
+
+      <div className="pp-detail-section">
+        <span className="pp-detail-section-label">Section access</span>
+        {isAdmin && !isCurrentUser ? (
+          <>
+            <div className="pp-perm-grid">
+              {SIDEBAR_SECTIONS.map((section) => (
+                <button
+                  key={section.key}
+                  type="button"
+                  className={`pp-perm-chip${selectedPermissions.includes(section.key) ? " active" : ""}`}
+                  onClick={() => toggleSelectedPerm(section.key)}
+                  disabled={saving}
+                >
+                  {section.label}
+                </button>
+              ))}
+            </div>
+            <button
+              className="pp-assign-submit"
+              onClick={() =>
+                onPermissionsSave(user.user_email, selectedPermissions)
+              }
+              disabled={saving || !hasPermissionChanges}
+            >
+              {saving ? "Saving…" : "Save access"}
+            </button>
+          </>
+        ) : (user.permissions || []).length > 0 ? (
+          <div className="pp-perm-grid">
+            {SIDEBAR_SECTIONS.filter((section) =>
+              (user.permissions || []).includes(section.key),
+            ).map((section) => (
+              <button
+                key={section.key}
+                type="button"
+                className="pp-perm-chip active"
+                disabled
+              >
+                {section.label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="pp-no-access">No section access assigned yet.</p>
         )}
       </div>
 
@@ -439,6 +544,7 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
         body: JSON.stringify({
           user_email: email,
           role: newRole,
+          persona: user?.persona || "developer",
           permissions: updatedPerms,
         }),
       });
@@ -463,6 +569,7 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
           body: JSON.stringify({
             user_email: email,
             role: "user",
+            persona: "developer",
             permissions,
           }),
         },
@@ -478,6 +585,58 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
       showSnackbar(err.message, "error");
     } finally {
       setAssigning(false);
+    }
+  };
+
+  const handlePermissionsSave = async (email, permissions) => {
+    const user = users.find((candidate) => candidate.user_email === email);
+    if (!user) return;
+
+    setSavingUserId(email);
+    try {
+      const res = await authFetch(`/api/rbac?tenant_id=${selectedTenantId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_email: email,
+          role: user.role || "user",
+          persona: user.persona || "developer",
+          permissions,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchUsers({ showLoader: false });
+      showSnackbar("Section access updated successfully", "success");
+    } catch (err) {
+      showSnackbar(err.message, "error");
+    } finally {
+      setSavingUserId(null);
+    }
+  };
+
+  const handlePersonaChange = async (email, persona) => {
+    const user = users.find((candidate) => candidate.user_email === email);
+    if (!user) return;
+
+    setSavingUserId(email);
+    try {
+      const res = await authFetch(`/api/rbac?tenant_id=${selectedTenantId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_email: email,
+          role: user.role || "user",
+          persona,
+          permissions: user.permissions || [],
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await fetchUsers({ showLoader: false });
+      showSnackbar("Persona updated successfully", "success");
+    } catch (err) {
+      showSnackbar(err.message, "error");
+    } finally {
+      setSavingUserId(null);
     }
   };
 
@@ -723,7 +882,9 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
               saving={savingUserId === selectedUser.user_email}
               assigning={assigning}
               onRoleChange={handleRoleChange}
+              onPersonaChange={handlePersonaChange}
               onAssign={handleAssign}
+              onPermissionsSave={handlePermissionsSave}
               onRemoveTenant={handleRemoveTenant}
             />
           )}
@@ -751,7 +912,8 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
             />
             <circle cx="5.5" cy="7.5" r="0.6" fill="currentColor" />
           </svg>
-          Read-only — contact an admin to change roles or client access.
+          Read-only — contact an admin to change roles, section access, or
+          client access.
         </p>
       )}
     </div>

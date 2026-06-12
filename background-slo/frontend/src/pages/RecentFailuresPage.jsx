@@ -19,6 +19,8 @@ function RecentFailuresPage({
   selectedTenantId,
   selectedTenant,
   notificationsEnabled,
+  userPersona,
+  userRole,
 }) {
   const { authFetch } = useAuth();
   const [codefacPipelines, setCodefacPipelines] = useState([]);
@@ -90,6 +92,8 @@ function RecentFailuresPage({
       selectedTenantId={selectedTenantId}
       selectedTenant={selectedTenant}
       notificationsEnabled={notificationsEnabled}
+      userPersona={userPersona}
+      userRole={userRole}
     />
   );
 }
