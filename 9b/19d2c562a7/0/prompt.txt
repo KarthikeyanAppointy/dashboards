@@ -132,3 +132,7 @@ also fix: in all the pages there is from and to selection it is working correctl
 
 ## My request for Codex:
 make the table scrollable horizontally so that i can see details properly, due to horizontal width few of the columsn only showing half of the details
+
+---
+
+git commit and push it.
