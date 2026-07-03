@@ -166,6 +166,12 @@ function AppContent() {
     const saved = localStorage.getItem("slo_dashboard_tasklist_filter");
     return saved ? saved.split(",") : [];
   });
+  const [workflowCategory, setWorkflowCategory] = useState(() => {
+    return localStorage.getItem("slo_dashboard_workflow_category") || "";
+  });
+  const [recipientEmailFilter, setRecipientEmailFilter] = useState(() => {
+    return localStorage.getItem("slo_dashboard_recipient_email") || "";
+  });
 
   const [availableTasklists, setAvailableTasklists] = useState([]);
 
@@ -373,6 +379,12 @@ function AppContent() {
     if (tasklistFilter.length > 0) {
       params.set("tasklist_filter", tasklistFilter.join(","));
     }
+    if (workflowCategory) {
+      params.set("workflow_category", workflowCategory);
+    }
+    if (workflowCategory === "email" && recipientEmailFilter.trim()) {
+      params.set("email_search", recipientEmailFilter.trim());
+    }
     if (startTime) {
       params.set("start_time", String(Math.floor(startTime)));
     }
@@ -393,6 +405,8 @@ function AppContent() {
     tasklistWindow,
     statusFilter,
     tasklistFilter,
+    workflowCategory,
+    recipientEmailFilter,
     startTime,
     endTime,
     offset,
@@ -458,6 +472,7 @@ function AppContent() {
 
   const handleLimitChange = (newLimit) => {
     setLimit(newLimit);
+    setOffset(0);
     localStorage.setItem("slo_dashboard_limit", String(newLimit));
   };
 
@@ -487,7 +502,24 @@ function AppContent() {
 
   const handleTasklistFilterChange = (newFilter) => {
     setTasklistFilter(newFilter);
+    setOffset(0);
     localStorage.setItem("slo_dashboard_tasklist_filter", newFilter.join(","));
+  };
+
+  const handleWorkflowCategoryChange = (category) => {
+    setWorkflowCategory(category);
+    setOffset(0);
+    localStorage.setItem("slo_dashboard_workflow_category", category);
+    if (category !== "email") {
+      setRecipientEmailFilter("");
+      localStorage.removeItem("slo_dashboard_recipient_email");
+    }
+  };
+
+  const handleRecipientEmailFilterChange = (email) => {
+    setRecipientEmailFilter(email);
+    setOffset(0);
+    localStorage.setItem("slo_dashboard_recipient_email", email);
   };
 
   const handleStartTimeChange = (newTime) => {
@@ -539,6 +571,8 @@ function AppContent() {
     { label: "Last 6h", value: 21600 },
     { label: "Last 12h", value: 43200 },
     { label: "Last 1d", value: 86400 },
+    { label: "Last 1w", value: 604800 },
+    { label: "Last 30d", value: 2592000 },
   ];
 
   const clearDates = () => {
@@ -876,7 +910,14 @@ function AppContent() {
                         onStatusFilterChange={handleStatusFilterChange}
                         tasklistFilter={tasklistFilter}
                         onTasklistFilterChange={handleTasklistFilterChange}
+                        workflowCategory={workflowCategory}
+                        onWorkflowCategoryChange={handleWorkflowCategoryChange}
+                        recipientEmailFilter={recipientEmailFilter}
+                        onRecipientEmailFilterChange={
+                          handleRecipientEmailFilterChange
+                        }
                         availableTasklists={availableTasklists}
+                        showLimitSelector={tasklistWindow >= 604800}
                         offset={offset}
                         onOffsetChange={handleOffsetChange}
                         totalFailed={totalFailed}

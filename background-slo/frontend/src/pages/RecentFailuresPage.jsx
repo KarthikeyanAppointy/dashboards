@@ -10,7 +10,12 @@ function RecentFailuresPage({
   onStatusFilterChange,
   tasklistFilter,
   onTasklistFilterChange,
+  workflowCategory,
+  onWorkflowCategoryChange,
+  recipientEmailFilter,
+  onRecipientEmailFilterChange,
   availableTasklists,
+  showLimitSelector,
   offset,
   onOffsetChange,
   totalFailed,
@@ -81,7 +86,12 @@ function RecentFailuresPage({
       onStatusFilterChange={onStatusFilterChange}
       tasklistFilter={tasklistFilter}
       onTasklistFilterChange={onTasklistFilterChange}
+      workflowCategory={workflowCategory}
+      onWorkflowCategoryChange={onWorkflowCategoryChange}
+      recipientEmailFilter={recipientEmailFilter}
+      onRecipientEmailFilterChange={onRecipientEmailFilterChange}
       availableTasklists={availableTasklists}
+      showLimitSelector={showLimitSelector}
       offset={offset}
       onOffsetChange={onOffsetChange}
       totalFailed={totalFailed}

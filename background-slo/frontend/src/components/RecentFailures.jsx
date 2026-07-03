@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useAuth } from "../auth/AuthContext";
 import WorkflowHistoryModal from "./WorkflowHistoryModal";
 import RcaReportModal from "./RcaReportModal";
@@ -311,7 +311,12 @@ function RecentFailures({
   onStatusFilterChange,
   tasklistFilter,
   onTasklistFilterChange,
+  workflowCategory,
+  onWorkflowCategoryChange,
+  recipientEmailFilter,
+  onRecipientEmailFilterChange,
   availableTasklists,
+  showLimitSelector,
   offset,
   onOffsetChange,
   totalFailed,
@@ -450,9 +455,11 @@ function RecentFailures({
       ? canShowPipelineColumns
       : true,
   );
+  const showEmailsColumn = workflowCategory === "email";
   const showColumn = (key) => visibleColumns.includes(key);
   const emptyColSpan =
-    availableColumnOptions.filter((option) => showColumn(option.key)).length || 1;
+    (availableColumnOptions.filter((option) => showColumn(option.key)).length ||
+      1) + (showEmailsColumn ? 1 : 0);
 
   const toggleColumn = (key) => {
     setVisibleColumns((current) => {
@@ -661,19 +668,21 @@ function RecentFailures({
               {filteredFailures.length} of {failures.length}
             </span>
           )}
-          <label className="limit-selector">
-            Show
-            <select
-              value={limit}
-              onChange={(e) => onLimitChange(Number(e.target.value))}
-            >
-              <option value={20}>20</option>
-              <option value={50}>50</option>
-              <option value={100}>100</option>
-              <option value={200}>200</option>
-              <option value={500}>500</option>
-            </select>
-          </label>
+          {showLimitSelector && (
+            <label className="limit-selector">
+              Show
+              <select
+                value={limit}
+                onChange={(e) => onLimitChange(Number(e.target.value))}
+              >
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={200}>200</option>
+                <option value={500}>500</option>
+              </select>
+            </label>
+          )}
           {totalFailed > 0 && (
             <div className="pagination-controls">
               <button
@@ -724,6 +733,18 @@ function RecentFailures({
         </div>
 
         <div className="filter-group">
+          <span className="filter-label">Type</span>
+          <select
+            className="pipeline-filter-select"
+            value={workflowCategory || ""}
+            onChange={(e) => onWorkflowCategoryChange(e.target.value)}
+          >
+            <option value="">All workflows</option>
+            <option value="email">Email Workflows</option>
+          </select>
+        </div>
+
+        <div className="filter-group">
           <span className="filter-label">RCA</span>
           <button
             className={`filter-chip${impactOnly ? " active" : ""}`}
@@ -761,6 +782,20 @@ function RecentFailures({
         )}
       </div>
 
+      {workflowCategory === "email" && (
+        <div className="recipient-filter-row">
+          <label className="recipient-filter">
+            <span className="filter-label">Email search</span>
+            <input
+              type="search"
+              value={recipientEmailFilter || ""}
+              onChange={(e) => onRecipientEmailFilterChange(e.target.value)}
+              placeholder="Search any email in history"
+            />
+          </label>
+        </div>
+      )}
+
       {!failures || failures.length === 0 ? (
         <div className="failures-empty">
           <span className="empty-icon">✓</span>
@@ -780,6 +815,9 @@ function RecentFailures({
                 )}
                 {showColumn("workflowType") && (
                   <th className="col-workflow-type">Type</th>
+                )}
+                {showEmailsColumn && (
+                  <th className="col-emails-involved">Emails involved</th>
                 )}
                 {showColumn("customerImpact") && (
                   <th className="col-customer-impact">Customer Impact</th>
@@ -818,6 +856,9 @@ function RecentFailures({
                 )}
                 {showColumn("workflowType") && (
                   <th className="col-workflow-type">Type</th>
+                )}
+                {showEmailsColumn && (
+                  <th className="col-emails-involved">Emails involved</th>
                 )}
                 {showColumn("customerImpact") && (
                   <th className="col-customer-impact">Customer Impact</th>
@@ -904,6 +945,25 @@ function RecentFailures({
                     {showColumn("workflowType") && (
                       <td className="cell-type">
                         {f.workflow_type}
+                      </td>
+                    )}
+                    {showEmailsColumn && (
+                      <td className="cell-emails" title={(f.involved_emails || []).join(", ")}>
+                        {Array.isArray(f.involved_emails) &&
+                        f.involved_emails.length > 0 ? (
+                          <div className="cell-email-stack">
+                            {f.involved_emails.slice(0, 4).map((email) => (
+                              <code key={email}>{email}</code>
+                            ))}
+                            {f.involved_emails.length > 4 && (
+                              <span className="cell-email-more">
+                                +{f.involved_emails.length - 4} more
+                              </span>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="cell-reason-empty">Not extracted yet</span>
+                        )}
                       </td>
                     )}
                     {showColumn("customerImpact") && (

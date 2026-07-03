@@ -126,6 +126,8 @@ function SummaryCards({
     21600: "6h",
     43200: "12h",
     86400: "24h",
+    604800: "7d",
+    2592000: "30d",
   };
   const selectedLabel = windowLabels[tasklistWindow] || "24h";
   const selectedTitle =
@@ -137,7 +139,11 @@ function SummaryCards({
           ? "Last 6 hours"
           : tasklistWindow === 43200
             ? "Last 12 hours"
-            : "Last 24 hours";
+            : tasklistWindow === 604800
+              ? "Last 7 days"
+              : tasklistWindow === 2592000
+                ? "Last 30 days"
+                : "Last 24 hours";
 
   // Get P100 latency for the selected window from windows array
   const selectedWindowLabel =

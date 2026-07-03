@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1725,6 +1726,8 @@ func EnsureWorkflowFailuresTable(db *sql.DB) error {
 		failure_message TEXT NOT NULL DEFAULT '',
 		failure_details TEXT NOT NULL DEFAULT '',
 		history_fetch_error TEXT NOT NULL DEFAULT '',
+		involved_emails TEXT[] NOT NULL DEFAULT '{}',
+		emails_extracted BOOLEAN NOT NULL DEFAULT FALSE,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		UNIQUE (tenant_id, workflow_id, run_id)
@@ -1733,10 +1736,18 @@ func EnsureWorkflowFailuresTable(db *sql.DB) error {
 		return fmt.Errorf("create workflow_failures table: %w", err)
 	}
 
+	if _, err := db.Exec(`ALTER TABLE workflow_failures ADD COLUMN IF NOT EXISTS involved_emails TEXT[] NOT NULL DEFAULT '{}'`); err != nil {
+		log.Printf("WARN: could not add involved_emails column: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE workflow_failures ADD COLUMN IF NOT EXISTS emails_extracted BOOLEAN NOT NULL DEFAULT FALSE`); err != nil {
+		log.Printf("WARN: could not add emails_extracted column: %v", err)
+	}
+
 	indexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_workflow_failures_tenant_close_time ON workflow_failures (tenant_id, close_time_ns DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_workflow_failures_tenant_workflow_type ON workflow_failures (tenant_id, workflow_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_workflow_failures_tenant_status ON workflow_failures (tenant_id, close_status)`,
+		`CREATE INDEX IF NOT EXISTS idx_workflow_failures_involved_emails ON workflow_failures USING GIN (involved_emails)`,
 	}
 	for _, stmt := range indexes {
 		if _, err := db.Exec(stmt); err != nil {
@@ -2437,13 +2448,14 @@ type RateData struct {
 // RecentWorkflow represents a single failed or timed-out workflow entry.
 type RecentWorkflow struct {
 	WorkflowRCAView
-	WorkflowID    string `json:"workflow_id"`
-	RunID         string `json:"run_id"`
-	WorkflowType  string `json:"workflow_type"`
-	TaskList      string `json:"tasklist"`
-	Status        string `json:"status"`
-	CloseTime     string `json:"close_time"`
-	FailureReason string `json:"failure_reason"`
+	WorkflowID     string   `json:"workflow_id"`
+	RunID          string   `json:"run_id"`
+	WorkflowType   string   `json:"workflow_type"`
+	TaskList       string   `json:"tasklist"`
+	Status         string   `json:"status"`
+	CloseTime      string   `json:"close_time"`
+	FailureReason  string   `json:"failure_reason"`
+	InvolvedEmails []string `json:"involved_emails,omitempty"`
 }
 
 // StoredWorkflowFailure captures the persisted close-state details for a workflow run.
@@ -2459,6 +2471,8 @@ type StoredWorkflowFailure struct {
 	FailureMessage    string
 	FailureDetails    string
 	HistoryFetchError string
+	InvolvedEmails    []string
+	EmailsExtracted   bool
 }
 
 // TasklistLatencyEntry holds average latency for a single tasklist.
@@ -2693,7 +2707,7 @@ type esMultiSearchResponse struct {
 // recent failed/timed-out workflows and one for tasklist latency.
 // statusFilter controls which CloseStatus values to include (default [1, 5]).
 // tasklistFilter optionally restricts to specific tasklist names.
-func buildMsearchBody(cfg Config, nowNanos int64, limit int, tasklistWindow int64, statusFilter []int, tasklistFilter []string, fromNanos, toNanos int64, offset int, activityErrorField string, activityStatusConditions []int, activityErrorDetailField string) []byte {
+func buildMsearchBody(cfg Config, nowNanos int64, limit int, tasklistWindow int64, statusFilter []int, tasklistFilter []string, fromNanos, toNanos int64, offset int, activityErrorField string, activityStatusConditions []int, activityErrorDetailField string, workflowCategory string) []byte {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -2737,7 +2751,7 @@ func buildMsearchBody(cfg Config, nowNanos int64, limit int, tasklistWindow int6
 	// --- Recent failed/timed-out workflows (combined, statusFilter determines which statuses) ---
 	header := map[string]string{"index": cfg.Index}
 	_ = enc.Encode(header)
-	_ = enc.Encode(buildRecentQuery(statusFilter, domainFilter, limit, tasklistFilter, effectiveFromNanos, effectiveToNanos, offset))
+	_ = enc.Encode(buildRecentQuery(statusFilter, domainFilter, limit, tasklistFilter, effectiveFromNanos, effectiveToNanos, offset, workflowCategory))
 
 	// --- Tasklist avg latency ---
 	tlFromNanos := nowNanos - (tasklistWindow * 1_000_000_000)
@@ -2845,7 +2859,7 @@ func buildWindowQuery(fromNanos, toNanos int64, domainFilter []interface{}) map[
 // buildRecentQuery constructs the query body for fetching recent workflows by CloseStatus.
 // statuses is a list of CloseStatus values to include (e.g. [1] for Failed, [5] for TimedOut, [1,5] for both).
 // tasklistFilter optionally restricts to specific tasklist names.
-func buildRecentQuery(statuses []int, domainFilter []interface{}, limit int, tasklistFilter []string, fromNanos, toNanos int64, offset int) map[string]interface{} {
+func buildRecentQuery(statuses []int, domainFilter []interface{}, limit int, tasklistFilter []string, fromNanos, toNanos int64, offset int, workflowCategory string) map[string]interface{} {
 	must := []interface{}{}
 
 	// Convert CloseStatus values to strings for ES term/terms queries
@@ -2872,6 +2886,20 @@ func buildRecentQuery(statuses []int, domainFilter []interface{}, limit int, tas
 	if len(tasklistFilter) > 0 {
 		must = append(must, map[string]interface{}{
 			"terms": map[string]interface{}{"TaskList": tasklistFilter},
+		})
+	}
+	if strings.EqualFold(strings.TrimSpace(workflowCategory), "email") {
+		should := []interface{}{}
+		for _, pattern := range []string{"*email*", "*Email*", "*mail*", "*Mail*"} {
+			should = append(should, map[string]interface{}{
+				"wildcard": map[string]string{"WorkflowType": pattern},
+			})
+		}
+		must = append(must, map[string]interface{}{
+			"bool": map[string]interface{}{
+				"should":               should,
+				"minimum_should_match": 1,
+			},
 		})
 	}
 
@@ -3297,7 +3325,12 @@ func recentWorkflowLookupKey(workflowID, runID string) string {
 	return workflowID + "\x00" + runID
 }
 
-func loadStoredRecentFailureReasons(tenantID int, recent []RecentWorkflow) map[string]string {
+type storedRecentFailureDetails struct {
+	Reason         string
+	InvolvedEmails []string
+}
+
+func loadStoredRecentFailureDetails(tenantID int, recent []RecentWorkflow) map[string]storedRecentFailureDetails {
 	if tenantID <= 0 || len(recent) == 0 {
 		return nil
 	}
@@ -3329,7 +3362,8 @@ func loadStoredRecentFailureReasons(tenantID int, recent []RecentWorkflow) map[s
 			COALESCE(NULLIF(wf.failure_message, ''), '') AS failure_message,
 			COALESCE(NULLIF(wf.failure_details, ''), '') AS failure_details,
 			COALESCE(NULLIF(wf.history_fetch_error, ''), '') AS history_fetch_error,
-			wf.close_status
+			wf.close_status,
+			wf.involved_emails
 		FROM workflow_failures wf
 		JOIN (VALUES %s) AS recent(workflow_id, run_id)
 		  ON wf.workflow_id = recent.workflow_id
@@ -3345,7 +3379,7 @@ func loadStoredRecentFailureReasons(tenantID int, recent []RecentWorkflow) map[s
 	}
 	defer rows.Close()
 
-	out := make(map[string]string, len(values))
+	out := make(map[string]storedRecentFailureDetails, len(values))
 	for rows.Next() {
 		var workflowID string
 		var runID string
@@ -3354,17 +3388,21 @@ func loadStoredRecentFailureReasons(tenantID int, recent []RecentWorkflow) map[s
 		var details string
 		var fetchError string
 		var closeStatus int
-		if err := rows.Scan(&workflowID, &runID, &reason, &message, &details, &fetchError, &closeStatus); err != nil {
+		var involvedEmails []string
+		if err := rows.Scan(&workflowID, &runID, &reason, &message, &details, &fetchError, &closeStatus, pq.Array(&involvedEmails)); err != nil {
 			log.Printf("WARN: recent failure reason scan tenant %d: %v", tenantID, err)
 			continue
 		}
-		out[recentWorkflowLookupKey(workflowID, runID)] = storedActivityErrorText(
-			reason,
-			message,
-			details,
-			fetchError,
-			workflowCloseStatusLabel(closeStatus),
-		)
+		out[recentWorkflowLookupKey(workflowID, runID)] = storedRecentFailureDetails{
+			Reason: storedActivityErrorText(
+				reason,
+				message,
+				details,
+				fetchError,
+				workflowCloseStatusLabel(closeStatus),
+			),
+			InvolvedEmails: involvedEmails,
+		}
 	}
 	if err := rows.Err(); err != nil {
 		log.Printf("WARN: recent failure reason iteration tenant %d: %v", tenantID, err)
@@ -3463,9 +3501,9 @@ func resolveESBaseURL(cfg Config) (baseURL string, useAudienceAuth bool, err err
 	return es, cfg.AudienceURL != "", nil
 }
 
-func queryElasticsearch(cfg Config, limit int, tasklistWindow int64, statusFilter []int, tasklistFilter []string, fromNanos, toNanos int64, offset int, activityErrorField string, activityStatusConditions []int, activityErrorDetailField string) (*esMultiSearchResponse, error) {
+func queryElasticsearch(cfg Config, limit int, tasklistWindow int64, statusFilter []int, tasklistFilter []string, fromNanos, toNanos int64, offset int, activityErrorField string, activityStatusConditions []int, activityErrorDetailField string, workflowCategory string) (*esMultiSearchResponse, error) {
 	nowNanos := time.Now().UnixNano()
-	body := buildMsearchBody(cfg, nowNanos, limit, tasklistWindow, statusFilter, tasklistFilter, fromNanos, toNanos, offset, activityErrorField, activityStatusConditions, activityErrorDetailField)
+	body := buildMsearchBody(cfg, nowNanos, limit, tasklistWindow, statusFilter, tasklistFilter, fromNanos, toNanos, offset, activityErrorField, activityStatusConditions, activityErrorDetailField, workflowCategory)
 
 	baseURL, useAudienceAuth, err := resolveESBaseURL(cfg)
 	if err != nil {
@@ -3881,18 +3919,96 @@ func extractStoredFailureFromHistory(historyData []byte) historyFailureSummary {
 	return mergeHistoryFailure(workflowFailure, activityFailure)
 }
 
+var historyEmailRE = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+
+func collectEmailsFromHistoryValue(value any, seen map[string]struct{}, out *[]string) {
+	switch v := value.(type) {
+	case nil:
+		return
+	case string:
+		for _, email := range historyEmailRE.FindAllString(v, -1) {
+			normalized := strings.ToLower(strings.TrimSpace(email))
+			if normalized == "" {
+				continue
+			}
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			*out = append(*out, email)
+		}
+	case []any:
+		for _, item := range v {
+			collectEmailsFromHistoryValue(item, seen, out)
+		}
+	case map[string]any:
+		for _, item := range v {
+			collectEmailsFromHistoryValue(item, seen, out)
+		}
+	}
+}
+
+func extractRecipientEmailsFromHistory(historyData []byte) []string {
+	var payload struct {
+		Events []json.RawMessage `json:"events"`
+	}
+	if err := json.Unmarshal(historyData, &payload); err != nil {
+		return nil
+	}
+
+	seen := map[string]struct{}{}
+	var emails []string
+	for _, rawEvent := range payload.Events {
+		var event any
+		if err := json.Unmarshal(rawEvent, &event); err != nil {
+			continue
+		}
+		collectEmailsFromHistoryValue(decodeHistoryPayload(event), seen, &emails)
+	}
+	return emails
+}
+
+func emailListMatches(emails []string, search string) bool {
+	needle := strings.ToLower(strings.TrimSpace(search))
+	if needle == "" {
+		return true
+	}
+	for _, email := range emails {
+		if strings.Contains(strings.ToLower(email), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func filterRecentFailuresByEmail(recent []RecentWorkflow, search string) []RecentWorkflow {
+	search = strings.TrimSpace(search)
+	if search == "" {
+		return recent
+	}
+
+	filtered := make([]RecentWorkflow, 0, len(recent))
+	for _, wf := range recent {
+		if emailListMatches(wf.InvolvedEmails, search) {
+			filtered = append(filtered, wf)
+		}
+	}
+	return filtered
+}
+
 func storedWorkflowFailureNeedsSync(ctx context.Context, tenant *Tenant, workflowID, runID string) (bool, error) {
 	if tenant == nil {
 		return false, fmt.Errorf("tenant is nil for workflow sync lookup")
 	}
 
 	var historyFetchError string
+	var emailsExtracted bool
 	err := db.QueryRowContext(ctx,
-		`SELECT COALESCE(history_fetch_error, '')
+		`SELECT COALESCE(history_fetch_error, ''), COALESCE(emails_extracted, FALSE)
 		FROM workflow_failures
 		WHERE tenant_id = $1 AND workflow_id = $2 AND run_id = $3`,
 		tenant.ID, workflowID, runID,
-	).Scan(&historyFetchError)
+	).Scan(&historyFetchError, &emailsExtracted)
 	if errors.Is(err, sql.ErrNoRows) {
 		return true, nil
 	}
@@ -3900,20 +4016,29 @@ func storedWorkflowFailureNeedsSync(ctx context.Context, tenant *Tenant, workflo
 		return false, fmt.Errorf("lookup stored workflow failure %s/%s: %w", workflowID, runID, err)
 	}
 
-	return strings.TrimSpace(tenant.CadenceWebURL) != "" && strings.TrimSpace(historyFetchError) != "", nil
+	return strings.TrimSpace(tenant.CadenceWebURL) != "" &&
+		(strings.TrimSpace(historyFetchError) != "" || !emailsExtracted), nil
 }
 
 func workflowFailureFetchKey(tenantID int, workflowID, runID string) string {
 	return fmt.Sprintf("%d:%s:%s", tenantID, workflowID, runID)
 }
 
+func normalizeEmailList(emails []string) []string {
+	if emails == nil {
+		return []string{}
+	}
+	return emails
+}
+
 func upsertStoredWorkflowFailure(ctx context.Context, failure StoredWorkflowFailure) error {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO workflow_failures (
 			tenant_id, workflow_id, run_id, workflow_type, tasklist, close_status, close_time_ns,
-			failure_reason, failure_message, failure_details, history_fetch_error, updated_at
+			failure_reason, failure_message, failure_details, history_fetch_error, involved_emails,
+			emails_extracted, updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
 		ON CONFLICT (tenant_id, workflow_id, run_id) DO UPDATE SET
 			workflow_type = EXCLUDED.workflow_type,
 			tasklist = EXCLUDED.tasklist,
@@ -3923,6 +4048,8 @@ func upsertStoredWorkflowFailure(ctx context.Context, failure StoredWorkflowFail
 			failure_message = EXCLUDED.failure_message,
 			failure_details = EXCLUDED.failure_details,
 			history_fetch_error = EXCLUDED.history_fetch_error,
+			involved_emails = EXCLUDED.involved_emails,
+			emails_extracted = EXCLUDED.emails_extracted,
 			updated_at = NOW()`,
 		failure.TenantID,
 		failure.WorkflowID,
@@ -3935,6 +4062,8 @@ func upsertStoredWorkflowFailure(ctx context.Context, failure StoredWorkflowFail
 		failure.FailureMessage,
 		failure.FailureDetails,
 		failure.HistoryFetchError,
+		pq.Array(normalizeEmailList(failure.InvolvedEmails)),
+		failure.EmailsExtracted,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert workflow failure %s/%s: %w", failure.WorkflowID, failure.RunID, err)
@@ -3975,6 +4104,8 @@ func syncWorkflowFailureHit(ctx context.Context, tenant *Tenant, hit esHit) erro
 			stored.FailureReason = strings.TrimSpace(failure.Reason)
 			stored.FailureMessage = strings.TrimSpace(failure.Message)
 			stored.FailureDetails = strings.TrimSpace(failure.Details)
+			stored.InvolvedEmails = extractRecipientEmailsFromHistory(historyData)
+			stored.EmailsExtracted = true
 		}
 	}
 
@@ -4214,10 +4345,13 @@ func buildResponse(cfg Config, tenantID int, msResp *esMultiSearchResponse, limi
 		if len(recentFailed) > limit {
 			recentFailed = recentFailed[:limit]
 		}
-		storedReasons := loadStoredRecentFailureReasons(tenantID, recentFailed)
+		storedDetails := loadStoredRecentFailureDetails(tenantID, recentFailed)
 		for i := range recentFailed {
-			if reason := storedReasons[recentWorkflowLookupKey(recentFailed[i].WorkflowID, recentFailed[i].RunID)]; strings.TrimSpace(reason) != "" {
-				recentFailed[i].FailureReason = reason
+			if details, ok := storedDetails[recentWorkflowLookupKey(recentFailed[i].WorkflowID, recentFailed[i].RunID)]; ok {
+				if strings.TrimSpace(details.Reason) != "" {
+					recentFailed[i].FailureReason = details.Reason
+				}
+				recentFailed[i].InvolvedEmails = details.InvolvedEmails
 			}
 		}
 		attachWorkflowRCAToRecentFailures(tenantID, recentFailed)
@@ -4497,8 +4631,11 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 	// Parse tasklist_window from query string (in seconds)
 	tasklistWindow := int64(3600) // default 1 hour
 	if twStr := r.URL.Query().Get("tasklist_window"); twStr != "" {
-		if tw, err := strconv.Atoi(twStr); err == nil && tw >= 300 && tw <= 86400 {
+		if tw, err := strconv.Atoi(twStr); err == nil && tw >= 300 {
 			tasklistWindow = int64(tw)
+			if tasklistWindow > 2592000 {
+				tasklistWindow = 2592000
+			}
 		}
 	}
 
@@ -4539,6 +4676,15 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 		if parsed, err := strconv.Atoi(offsetStr); err == nil && parsed >= 0 {
 			offset = parsed
 		}
+	}
+
+	workflowCategory := strings.TrimSpace(r.URL.Query().Get("workflow_category"))
+	emailSearch := strings.TrimSpace(r.URL.Query().Get("email_search"))
+	if emailSearch == "" {
+		emailSearch = strings.TrimSpace(r.URL.Query().Get("recipient_email"))
+	}
+	if emailSearch != "" {
+		workflowCategory = "email"
 	}
 
 	// Parse activity_status_filter from query string for activity errors (comma-separated)
@@ -4596,7 +4742,13 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 	// Query Elasticsearch live for dashboard metrics. For general activity status filters we
 	// keep the old ES workflow-type counts; for Failed/TimedOut-only filters we swap in the
 	// stored Cadence history breakdown below.
-	msResp, err := queryElasticsearch(cfg, limit, tasklistWindow, statusFilter, tasklistFilter, fromNanos, toNanos, offset, activityErrorField, activityStatusConditions, "")
+	queryLimit := limit
+	queryOffset := offset
+	if emailSearch != "" {
+		queryLimit = 500
+		queryOffset = 0
+	}
+	msResp, err := queryElasticsearch(cfg, queryLimit, tasklistWindow, statusFilter, tasklistFilter, fromNanos, toNanos, queryOffset, activityErrorField, activityStatusConditions, "", workflowCategory)
 	if err != nil {
 		log.Printf("ERROR: ES query failed: %v", err)
 		writeJSONError(w, fmt.Sprintf("ES query failed: %v", err), http.StatusInternalServerError)
@@ -4604,7 +4756,20 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build the response
-	apiResp, _ := buildResponse(cfg, tenant.ID, msResp, limit, statusFilter, activityErrorField, "", tasklistWindow)
+	apiResp, _ := buildResponse(cfg, tenant.ID, msResp, queryLimit, statusFilter, activityErrorField, "", tasklistWindow)
+	if emailSearch != "" {
+		matches := filterRecentFailuresByEmail(apiResp.RecentFailed, emailSearch)
+		apiResp.TotalFailed = len(matches)
+		if offset >= len(matches) {
+			apiResp.RecentFailed = nil
+		} else {
+			end := offset + limit
+			if end > len(matches) {
+				end = len(matches)
+			}
+			apiResp.RecentFailed = matches[offset:end]
+		}
+	}
 	if useStoredActivityBreakdown {
 		storedActivityErrors, err := loadStoredActivityErrors(r.Context(), tenant.ID, tasklistWindow, fromNanos, toNanos, tasklistFilter, activityStatusConditions)
 		if err != nil {
@@ -7721,7 +7886,7 @@ func reportTriggerHandler(w http.ResponseWriter, r *http.Request) {
 	if !cachedReportData {
 		log.Printf("WARN: report %d: no cached data for tenant %d, querying ES directly", id, report.TenantID)
 		cfg := tenantESConfig(tenant)
-		if msResp, err := queryElasticsearch(cfg, 20, 86400, []int{1, 5}, []string{}, 0, 0, 0, "", nil, ""); err == nil {
+		if msResp, err := queryElasticsearch(cfg, 20, 86400, []int{1, 5}, []string{}, 0, 0, 0, "", nil, "", ""); err == nil {
 			if apiResp, _ := buildResponse(cfg, report.TenantID, msResp, 20, []int{1, 5}, "", "", 86400); apiResp.DomainName != "" {
 				dashboardInfo, successful24h, failures24h, totalVolume24h, p100Latency24h, successRate24h, failureRate24h = buildReportMetrics(&apiResp)
 			}
@@ -7789,7 +7954,7 @@ func reportTriggerHandler(w http.ResponseWriter, r *http.Request) {
 		if !p100DataAvailable {
 			log.Printf("WARN: report %d: no cached P100 data for tenant %d, querying ES directly", id, report.TenantID)
 			cfg := tenantESConfig(tenant)
-			if msResp, err := queryElasticsearch(cfg, 20, 86400, []int{1, 5}, []string{}, 0, 0, 0, "", nil, ""); err == nil {
+			if msResp, err := queryElasticsearch(cfg, 20, 86400, []int{1, 5}, []string{}, 0, 0, 0, "", nil, "", ""); err == nil {
 				if apiResp, _ := buildResponse(cfg, report.TenantID, msResp, 20, []int{1, 5}, "", "", 86400); apiResp.DomainName != "" && len(apiResp.P100ByWorkflow) > 0 {
 					sorted := extractP100TopN(apiResp.P100ByWorkflow, topN)
 					p100Info = formatP100Report(sorted, topN)
@@ -8039,7 +8204,7 @@ func startDashboardRefresher(ctx context.Context) {
 		for _, t := range tenants {
 			cfg := tenantESConfig(&t)
 			msResp, err := queryElasticsearch(cfg, 20, 3600, []int{1, 5},
-				[]string{}, 0, 0, 0, "", nil, "")
+				[]string{}, 0, 0, 0, "", nil, "", "")
 			if err != nil {
 				log.Printf("ERROR: dashboard refresh tenant %d: %v", t.ID, err)
 				continue

@@ -6,6 +6,8 @@ const WINDOW_OPTIONS = [
   { label: "Last 6h", value: 21600 },
   { label: "Last 12h", value: 43200 },
   { label: "Last 1d", value: 86400 },
+  { label: "Last 1w", value: 604800 },
+  { label: "Last 30d", value: 2592000 },
 ];
 
 const LatencyAlertBell = ({ active, onClick, title }) => (
