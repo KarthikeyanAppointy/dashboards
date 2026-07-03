@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "./auth/AuthContext";
 import Sidebar from "./components/Sidebar";
@@ -134,6 +134,7 @@ function AppContent() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const workflowsAbortRef = useRef(null);
 
   const [tenants, setTenants] = useState([]);
   const [userAssignedTenantIds, setUserAssignedTenantIds] = useState(null);
@@ -172,6 +173,7 @@ function AppContent() {
   const [recipientEmailFilter, setRecipientEmailFilter] = useState(() => {
     return localStorage.getItem("slo_dashboard_recipient_email") || "";
   });
+  const [historySearchFilter, setHistorySearchFilter] = useState("");
 
   const [availableTasklists, setAvailableTasklists] = useState([]);
 
@@ -293,6 +295,10 @@ function AppContent() {
     const saved = localStorage.getItem("slo_dashboard_auto_refresh");
     return saved === null ? true : saved === "true";
   });
+  const autoRefreshPausedByHistorySearch =
+    location.pathname === "/recent-failures" &&
+    !workflowCategory &&
+    historySearchFilter.trim().length > 0;
 
   const toggleAutoRefresh = () => {
     setAutoRefresh((prev) => {
@@ -385,6 +391,9 @@ function AppContent() {
     if (workflowCategory === "email" && recipientEmailFilter.trim()) {
       params.set("email_search", recipientEmailFilter.trim());
     }
+    if (!workflowCategory && historySearchFilter.trim()) {
+      params.set("history_search", historySearchFilter.trim());
+    }
     if (startTime) {
       params.set("start_time", String(Math.floor(startTime)));
     }
@@ -407,6 +416,7 @@ function AppContent() {
     tasklistFilter,
     workflowCategory,
     recipientEmailFilter,
+    historySearchFilter,
     startTime,
     endTime,
     offset,
@@ -416,10 +426,16 @@ function AppContent() {
   const fetchData = useCallback(async () => {
     if (!selectedTenantId) return;
 
+    const controller = new AbortController();
+    workflowsAbortRef.current?.abort();
+    workflowsAbortRef.current = controller;
+
     try {
       setLoading(true);
       const qs = buildQueryString();
-      const response = await authFetch(`/api/workflows?${qs}`);
+      const response = await authFetch(`/api/workflows?${qs}`, {
+        signal: controller.signal,
+      });
       if (!response.ok) {
         throw new Error(`HTTP error: ${response.status}`);
       }
@@ -447,9 +463,13 @@ function AppContent() {
       setAvailableTasklists(Array.from(tasklistSet).sort());
       setTotalFailed(json.total_failed || 0);
     } catch (err) {
+      if (err.name === "AbortError") return;
       setError(err.message);
     } finally {
-      setLoading(false);
+      if (workflowsAbortRef.current === controller) {
+        workflowsAbortRef.current = null;
+        setLoading(false);
+      }
     }
   }, [authFetch, buildQueryString, selectedTenantId, tasklistFilter]);
 
@@ -460,10 +480,16 @@ function AppContent() {
   }, [fetchData, selectedTenantId]);
 
   useEffect(() => {
-    if (!selectedTenantId || !autoRefresh) return;
+    if (!selectedTenantId || !autoRefresh || autoRefreshPausedByHistorySearch)
+      return;
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
-  }, [fetchData, selectedTenantId, autoRefresh]);
+  }, [
+    fetchData,
+    selectedTenantId,
+    autoRefresh,
+    autoRefreshPausedByHistorySearch,
+  ]);
 
   const handleTenantSelect = (id) => {
     setSelectedTenantId(id);
@@ -514,6 +540,9 @@ function AppContent() {
       setRecipientEmailFilter("");
       localStorage.removeItem("slo_dashboard_recipient_email");
     }
+    if (category !== "") {
+      setHistorySearchFilter("");
+    }
   };
 
   const handleRecipientEmailFilterChange = (email) => {
@@ -522,28 +551,27 @@ function AppContent() {
     localStorage.setItem("slo_dashboard_recipient_email", email);
   };
 
+  const handleHistorySearchFilterChange = (search) => {
+    setHistorySearchFilter(search);
+    setOffset(0);
+  };
+
   const handleStartTimeChange = (newTime) => {
     setStartTime(newTime);
     setOffset(0);
-    // Reset window selector when a date range is picked
-    setTasklistWindow(3600);
     localStorage.setItem(
       "slo_dashboard_start_time",
       newTime ? String(newTime) : "",
     );
-    localStorage.setItem("slo_dashboard_tasklist_window", "3600");
   };
 
   const handleEndTimeChange = (newTime) => {
     setEndTime(newTime);
     setOffset(0);
-    // Reset window selector when a date range is picked
-    setTasklistWindow(3600);
     localStorage.setItem(
       "slo_dashboard_end_time",
       newTime ? String(newTime) : "",
     );
-    localStorage.setItem("slo_dashboard_tasklist_window", "3600");
   };
 
   const handleOffsetChange = (newOffset) => {
@@ -609,12 +637,14 @@ function AppContent() {
 
               {location.pathname !== "/ses" && (
                 <button
-                  className={`topbar-auto-refresh-btn${autoRefresh ? " active" : ""}`}
+                  className={`topbar-auto-refresh-btn${autoRefresh && !autoRefreshPausedByHistorySearch ? " active" : ""}`}
                   onClick={toggleAutoRefresh}
                   title={
-                    autoRefresh
-                      ? "Auto-refresh on — click to pause"
-                      : "Auto-refresh paused — click to enable"
+                    autoRefreshPausedByHistorySearch
+                      ? "Auto-refresh paused while history search is active"
+                      : autoRefresh
+                        ? "Auto-refresh on — click to pause"
+                        : "Auto-refresh paused — click to enable"
                   }
                 >
                   <svg
@@ -638,7 +668,11 @@ function AppContent() {
                       strokeLinejoin="round"
                     />
                   </svg>
-                  {autoRefresh ? "Auto" : "Paused"}
+                  {autoRefreshPausedByHistorySearch
+                    ? "Search"
+                    : autoRefresh
+                      ? "Auto"
+                      : "Paused"}
                 </button>
               )}
               <button className="topbar-primary-btn" onClick={fetchData}>
@@ -904,6 +938,7 @@ function AppContent() {
                     canAccess("/recent-failures") ? (
                       <RecentFailuresPage
                         data={data}
+                        loading={loading}
                         limit={limit}
                         onLimitChange={handleLimitChange}
                         statusFilter={statusFilter}
@@ -915,6 +950,10 @@ function AppContent() {
                         recipientEmailFilter={recipientEmailFilter}
                         onRecipientEmailFilterChange={
                           handleRecipientEmailFilterChange
+                        }
+                        historySearchFilter={historySearchFilter}
+                        onHistorySearchFilterChange={
+                          handleHistorySearchFilterChange
                         }
                         availableTasklists={availableTasklists}
                         showLimitSelector={tasklistWindow >= 604800}

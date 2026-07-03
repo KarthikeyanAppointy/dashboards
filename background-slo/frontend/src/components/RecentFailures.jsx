@@ -305,6 +305,7 @@ const FailuresAlertBell = ({ active, onClick, title }) => (
 
 function RecentFailures({
   failures,
+  loading,
   limit,
   onLimitChange,
   statusFilter,
@@ -315,6 +316,8 @@ function RecentFailures({
   onWorkflowCategoryChange,
   recipientEmailFilter,
   onRecipientEmailFilterChange,
+  historySearchFilter,
+  onHistorySearchFilterChange,
   availableTasklists,
   showLimitSelector,
   offset,
@@ -338,6 +341,8 @@ function RecentFailures({
   const totalPages = Math.ceil(totalFailed / pageSize);
   const hasPrevPage = offset > 0;
   const hasNextPage = offset + pageSize < totalFailed;
+  const historySearchActive =
+    !workflowCategory && (historySearchFilter || "").trim().length > 0;
 
   const [selectedPipelineId, setSelectedPipelineId] = useState(
     codefacPipelines && codefacPipelines.length > 0
@@ -796,7 +801,26 @@ function RecentFailures({
         </div>
       )}
 
-      {!failures || failures.length === 0 ? (
+      {!workflowCategory && (
+        <div className="recipient-filter-row">
+          <label className="recipient-filter">
+            <span className="filter-label">Search</span>
+            <input
+              type="search"
+              value={historySearchFilter || ""}
+              onChange={(e) => onHistorySearchFilterChange(e.target.value)}
+              placeholder="Find by workflow details"
+            />
+          </label>
+        </div>
+      )}
+
+      {historySearchActive && loading ? (
+        <div className="failures-empty">
+          <span className="spinner-tiny" />
+          <p>Searching workflow history...</p>
+        </div>
+      ) : !failures || failures.length === 0 ? (
         <div className="failures-empty">
           <span className="empty-icon">✓</span>
           <p>No recent failures</p>

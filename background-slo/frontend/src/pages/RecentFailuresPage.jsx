@@ -4,6 +4,7 @@ import RecentFailures from "../components/RecentFailures";
 
 function RecentFailuresPage({
   data,
+  loading,
   limit,
   onLimitChange,
   statusFilter,
@@ -14,6 +15,8 @@ function RecentFailuresPage({
   onWorkflowCategoryChange,
   recipientEmailFilter,
   onRecipientEmailFilterChange,
+  historySearchFilter,
+  onHistorySearchFilterChange,
   availableTasklists,
   showLimitSelector,
   offset,
@@ -80,6 +83,7 @@ function RecentFailuresPage({
   return (
     <RecentFailures
       failures={data.recent_failed}
+      loading={loading}
       limit={limit}
       onLimitChange={onLimitChange}
       statusFilter={statusFilter}
@@ -90,6 +94,8 @@ function RecentFailuresPage({
       onWorkflowCategoryChange={onWorkflowCategoryChange}
       recipientEmailFilter={recipientEmailFilter}
       onRecipientEmailFilterChange={onRecipientEmailFilterChange}
+      historySearchFilter={historySearchFilter}
+      onHistorySearchFilterChange={onHistorySearchFilterChange}
       availableTasklists={availableTasklists}
       showLimitSelector={showLimitSelector}
       offset={offset}

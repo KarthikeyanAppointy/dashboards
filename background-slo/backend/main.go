@@ -1726,6 +1726,8 @@ func EnsureWorkflowFailuresTable(db *sql.DB) error {
 		failure_message TEXT NOT NULL DEFAULT '',
 		failure_details TEXT NOT NULL DEFAULT '',
 		history_fetch_error TEXT NOT NULL DEFAULT '',
+		history_json TEXT NOT NULL DEFAULT '',
+		history_search_text TEXT NOT NULL DEFAULT '',
 		involved_emails TEXT[] NOT NULL DEFAULT '{}',
 		emails_extracted BOOLEAN NOT NULL DEFAULT FALSE,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1741,6 +1743,12 @@ func EnsureWorkflowFailuresTable(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`ALTER TABLE workflow_failures ADD COLUMN IF NOT EXISTS emails_extracted BOOLEAN NOT NULL DEFAULT FALSE`); err != nil {
 		log.Printf("WARN: could not add emails_extracted column: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE workflow_failures ADD COLUMN IF NOT EXISTS history_json TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add history_json column: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE workflow_failures ADD COLUMN IF NOT EXISTS history_search_text TEXT NOT NULL DEFAULT ''`); err != nil {
+		log.Printf("WARN: could not add history_search_text column: %v", err)
 	}
 
 	indexes := []string{
@@ -2471,6 +2479,8 @@ type StoredWorkflowFailure struct {
 	FailureMessage    string
 	FailureDetails    string
 	HistoryFetchError string
+	HistoryJSON       string
+	HistorySearchText string
 	InvolvedEmails    []string
 	EmailsExtracted   bool
 }
@@ -2726,13 +2736,10 @@ func buildMsearchBody(cfg Config, nowNanos int64, limit int, tasklistWindow int6
 	for _, w := range windows {
 		var windowFromNanos int64
 		var windowToNanos int64
-		if fromNanos > 0 {
+		if fromNanos > 0 || toNanos > 0 {
 			// Datepicker is active — use the custom time range for all windows
-			windowFromNanos = fromNanos
-			windowToNanos = toNanos
-			if windowToNanos <= 0 {
-				windowToNanos = nowNanos
-			}
+			windowFromNanos = effectiveFromNanos
+			windowToNanos = effectiveToNanos
 		} else {
 			// No datepicker — use relative window
 			windowFromNanos = nowNanos - (w.Seconds * 1_000_000_000)
@@ -2754,36 +2761,24 @@ func buildMsearchBody(cfg Config, nowNanos int64, limit int, tasklistWindow int6
 	_ = enc.Encode(buildRecentQuery(statusFilter, domainFilter, limit, tasklistFilter, effectiveFromNanos, effectiveToNanos, offset, workflowCategory))
 
 	// --- Tasklist avg latency ---
-	tlFromNanos := nowNanos - (tasklistWindow * 1_000_000_000)
-	if fromNanos > 0 {
-		tlFromNanos = fromNanos
-	}
 	_ = enc.Encode(header)
-	_ = enc.Encode(buildTasklistLatencyQuery(nowNanos, domainFilter, tasklistWindow, tlFromNanos))
+	_ = enc.Encode(buildTasklistLatencyQuery(domainFilter, effectiveFromNanos, effectiveToNanos))
 
 	// --- Activity errors (with status filter) ---
 	if activityErrorField != "" {
 		_ = enc.Encode(header)
-		_ = enc.Encode(buildActivityErrorQuery(domainFilter, activityErrorField, activityStatusConditions, activityErrorDetailField))
+		_ = enc.Encode(buildActivityErrorQuery(domainFilter, activityErrorField, activityStatusConditions, activityErrorDetailField, effectiveFromNanos, effectiveToNanos))
 	}
 
 	// --- P100 latency by workflow type (top 100 completed workflows) ---
-	// Use the tasklist window as a fallback time range when no date picker is set.
-	p100FromNanos := fromNanos
-	if p100FromNanos == 0 {
-		p100FromNanos = nowNanos - (tasklistWindow * 1_000_000_000)
-	}
 	_ = enc.Encode(header)
-	_ = enc.Encode(buildP100ByWorkflowTypeQuery(nowNanos, domainFilter, p100FromNanos, toNanos))
+	_ = enc.Encode(buildP100ByWorkflowTypeQuery(nowNanos, domainFilter, effectiveFromNanos, effectiveToNanos))
 
-	// --- Dynamic window for the selected tasklistWindow ---
+	// --- Dynamic window for the selected tasklistWindow or custom date range ---
 	// Adds a window matching the user's window selector so summary cards
 	// (success/failure rates, volume) reflect the selected time range.
-	if fromNanos <= 0 {
-		dynFromNanos := nowNanos - (tasklistWindow * 1_000_000_000)
-		_ = enc.Encode(header)
-		_ = enc.Encode(buildWindowQuery(dynFromNanos, nowNanos, domainFilter))
-	}
+	_ = enc.Encode(header)
+	_ = enc.Encode(buildWindowQuery(effectiveFromNanos, effectiveToNanos, domainFilter))
 
 	return buf.Bytes()
 }
@@ -2950,10 +2945,8 @@ func buildRecentQuery(statuses []int, domainFilter []interface{}, limit int, tas
 }
 
 // buildTasklistLatencyQuery constructs an ES query to get avg latency per tasklist
-// for completed workflows in the last hour.
-func buildTasklistLatencyQuery(nowNanos int64, domainFilter []interface{}, windowSeconds int64, windowFromNanos int64) map[string]interface{} {
-	fromNanos := windowFromNanos
-
+// for completed workflows in the selected range.
+func buildTasklistLatencyQuery(domainFilter []interface{}, fromNanos, toNanos int64) map[string]interface{} {
 	must := []interface{}{
 		map[string]interface{}{
 			"term": map[string]string{"CloseStatus": "0"},
@@ -2962,6 +2955,7 @@ func buildTasklistLatencyQuery(nowNanos int64, domainFilter []interface{}, windo
 			"range": map[string]interface{}{
 				"CloseTime": map[string]int64{
 					"gte": fromNanos,
+					"lte": toNanos,
 				},
 			},
 		},
@@ -3006,12 +3000,20 @@ func buildTasklistLatencyQuery(nowNanos int64, domainFilter []interface{}, windo
 
 // buildActivityErrorQuery constructs an ES query to find open workflows and group them
 // by a configurable field (e.g., WorkflowType or a custom search attribute for activity errors).
-func buildActivityErrorQuery(domainFilter []interface{}, activityErrorField string, statusConditions []int, errorField string) map[string]interface{} {
+func buildActivityErrorQuery(domainFilter []interface{}, activityErrorField string, statusConditions []int, errorField string, fromNanos, toNanos int64) map[string]interface{} {
 	must := []interface{}{}
 
 	for _, f := range domainFilter {
 		must = append(must, f)
 	}
+	must = append(must, map[string]interface{}{
+		"range": map[string]interface{}{
+			"StartTime": map[string]int64{
+				"gte": fromNanos,
+				"lte": toNanos,
+			},
+		},
+	})
 
 	boolQuery := map[string]interface{}{
 		"must": must,
@@ -3700,6 +3702,19 @@ func formatHistoryPayload(value any) string {
 	}
 }
 
+func extractHistorySearchText(historyData []byte) string {
+	var decoded any
+	if err := json.Unmarshal(historyData, &decoded); err != nil {
+		return ""
+	}
+	decoded = decodeHistoryPayload(decoded)
+	b, err := json.Marshal(decoded)
+	if err != nil {
+		return fmt.Sprintf("%v", decoded)
+	}
+	return string(b)
+}
+
 func historyFailureFromFailureObject(value any) historyFailureSummary {
 	failure := mapStringAny(value)
 	if failure == nil {
@@ -4003,12 +4018,14 @@ func storedWorkflowFailureNeedsSync(ctx context.Context, tenant *Tenant, workflo
 
 	var historyFetchError string
 	var emailsExtracted bool
+	var historyJSON string
+	var historySearchText string
 	err := db.QueryRowContext(ctx,
-		`SELECT COALESCE(history_fetch_error, ''), COALESCE(emails_extracted, FALSE)
+		`SELECT COALESCE(history_fetch_error, ''), COALESCE(emails_extracted, FALSE), COALESCE(history_json, ''), COALESCE(history_search_text, '')
 		FROM workflow_failures
 		WHERE tenant_id = $1 AND workflow_id = $2 AND run_id = $3`,
 		tenant.ID, workflowID, runID,
-	).Scan(&historyFetchError, &emailsExtracted)
+	).Scan(&historyFetchError, &emailsExtracted, &historyJSON, &historySearchText)
 	if errors.Is(err, sql.ErrNoRows) {
 		return true, nil
 	}
@@ -4017,7 +4034,10 @@ func storedWorkflowFailureNeedsSync(ctx context.Context, tenant *Tenant, workflo
 	}
 
 	return strings.TrimSpace(tenant.CadenceWebURL) != "" &&
-		(strings.TrimSpace(historyFetchError) != "" || !emailsExtracted), nil
+		(strings.TrimSpace(historyFetchError) != "" ||
+			!emailsExtracted ||
+			strings.TrimSpace(historyJSON) == "" ||
+			strings.TrimSpace(historySearchText) == ""), nil
 }
 
 func workflowFailureFetchKey(tenantID int, workflowID, runID string) string {
@@ -4035,10 +4055,10 @@ func upsertStoredWorkflowFailure(ctx context.Context, failure StoredWorkflowFail
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO workflow_failures (
 			tenant_id, workflow_id, run_id, workflow_type, tasklist, close_status, close_time_ns,
-			failure_reason, failure_message, failure_details, history_fetch_error, involved_emails,
-			emails_extracted, updated_at
+			failure_reason, failure_message, failure_details, history_fetch_error, history_json, history_search_text,
+			involved_emails, emails_extracted, updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
 		ON CONFLICT (tenant_id, workflow_id, run_id) DO UPDATE SET
 			workflow_type = EXCLUDED.workflow_type,
 			tasklist = EXCLUDED.tasklist,
@@ -4048,6 +4068,8 @@ func upsertStoredWorkflowFailure(ctx context.Context, failure StoredWorkflowFail
 			failure_message = EXCLUDED.failure_message,
 			failure_details = EXCLUDED.failure_details,
 			history_fetch_error = EXCLUDED.history_fetch_error,
+			history_json = EXCLUDED.history_json,
+			history_search_text = EXCLUDED.history_search_text,
 			involved_emails = EXCLUDED.involved_emails,
 			emails_extracted = EXCLUDED.emails_extracted,
 			updated_at = NOW()`,
@@ -4062,6 +4084,8 @@ func upsertStoredWorkflowFailure(ctx context.Context, failure StoredWorkflowFail
 		failure.FailureMessage,
 		failure.FailureDetails,
 		failure.HistoryFetchError,
+		failure.HistoryJSON,
+		failure.HistorySearchText,
 		pq.Array(normalizeEmailList(failure.InvolvedEmails)),
 		failure.EmailsExtracted,
 	)
@@ -4100,6 +4124,8 @@ func syncWorkflowFailureHit(ctx context.Context, tenant *Tenant, hit esHit) erro
 		if err != nil {
 			stored.HistoryFetchError = err.Error()
 		} else {
+			stored.HistoryJSON = string(historyData)
+			stored.HistorySearchText = extractHistorySearchText(historyData)
 			failure := extractStoredFailureFromHistory(historyData)
 			stored.FailureReason = strings.TrimSpace(failure.Reason)
 			stored.FailureMessage = strings.TrimSpace(failure.Message)
@@ -4282,6 +4308,199 @@ func loadStoredActivityErrors(ctx context.Context, tenantID int, tasklistWindow 
 	}
 
 	return results, nil
+}
+
+func backfillStoredHistorySearchText(ctx context.Context, tenantID int, effectiveFrom, effectiveTo int64, tasklistFilter []string, statusConditions []int) error {
+	where := []string{
+		"tenant_id = $1",
+		"close_time_ns >= $2",
+		"close_time_ns <= $3",
+		"history_json <> ''",
+		"history_search_text = ''",
+	}
+	args := []any{tenantID, effectiveFrom, effectiveTo}
+
+	if len(tasklistFilter) > 0 {
+		args = append(args, pq.Array(tasklistFilter))
+		where = append(where, fmt.Sprintf("tasklist = ANY($%d)", len(args)))
+	}
+
+	statusCodes := normalizeStoredFailureStatusConditions(statusConditions)
+	if len(statusCodes) > 0 {
+		args = append(args, pq.Array(statusCodes))
+		where = append(where, fmt.Sprintf("close_status = ANY($%d)", len(args)))
+	}
+
+	query := fmt.Sprintf(`
+		SELECT workflow_id, run_id, history_json
+		FROM workflow_failures
+		WHERE %s
+		ORDER BY close_time_ns DESC
+		LIMIT 500`,
+		strings.Join(where, " AND "),
+	)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("query history search text backfill: %w", err)
+	}
+	defer rows.Close()
+
+	type backfillRow struct {
+		WorkflowID  string
+		RunID       string
+		HistoryJSON string
+	}
+	var pending []backfillRow
+	for rows.Next() {
+		var row backfillRow
+		if err := rows.Scan(&row.WorkflowID, &row.RunID, &row.HistoryJSON); err != nil {
+			return fmt.Errorf("scan history search text backfill: %w", err)
+		}
+		pending = append(pending, row)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate history search text backfill: %w", err)
+	}
+
+	for _, row := range pending {
+		searchText := extractHistorySearchText([]byte(row.HistoryJSON))
+		if strings.TrimSpace(searchText) == "" {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, `
+			UPDATE workflow_failures
+			SET history_search_text = $1, updated_at = NOW()
+			WHERE tenant_id = $2 AND workflow_id = $3 AND run_id = $4`,
+			searchText, tenantID, row.WorkflowID, row.RunID,
+		); err != nil {
+			return fmt.Errorf("update history search text backfill: %w", err)
+		}
+	}
+	return nil
+}
+
+func loadStoredHistorySearchFailures(ctx context.Context, tenantID int, tasklistWindow int64, fromNanos, toNanos int64, tasklistFilter []string, statusConditions []int, search string, limit int, offset int) ([]RecentWorkflow, int, error) {
+	search = strings.TrimSpace(search)
+	if search == "" {
+		return nil, 0, nil
+	}
+
+	effectiveFrom, effectiveTo := effectiveWorkflowFailureRange(tasklistWindow, fromNanos, toNanos)
+	// ponytail: one-request lazy backfill; make this a background migration if it ever hurts.
+	if err := backfillStoredHistorySearchText(ctx, tenantID, effectiveFrom, effectiveTo, tasklistFilter, statusConditions); err != nil {
+		return nil, 0, err
+	}
+	where := []string{
+		"tenant_id = $1",
+		"close_time_ns >= $2",
+		"close_time_ns <= $3",
+	}
+	args := []any{tenantID, effectiveFrom, effectiveTo}
+
+	args = append(args, search)
+	// ponytail: linear scan over selected window; add trigram/tsvector index if this gets slow.
+	where = append(where, fmt.Sprintf(`STRPOS(LOWER(CONCAT_WS(' ',
+		workflow_id,
+		run_id,
+		workflow_type,
+		tasklist,
+		failure_reason,
+		failure_message,
+		failure_details,
+		history_fetch_error,
+		history_json,
+		history_search_text
+	)), LOWER($%d)) > 0`, len(args)))
+
+	if len(tasklistFilter) > 0 {
+		args = append(args, pq.Array(tasklistFilter))
+		where = append(where, fmt.Sprintf("tasklist = ANY($%d)", len(args)))
+	}
+
+	statusCodes := normalizeStoredFailureStatusConditions(statusConditions)
+	if len(statusCodes) > 0 {
+		args = append(args, pq.Array(statusCodes))
+		where = append(where, fmt.Sprintf("close_status = ANY($%d)", len(args)))
+	}
+
+	args = append(args, limit)
+	limitPlaceholder := len(args)
+	args = append(args, offset)
+	offsetPlaceholder := len(args)
+
+	query := fmt.Sprintf(`
+		SELECT
+			workflow_id,
+			run_id,
+			workflow_type,
+			tasklist,
+			close_status,
+			close_time_ns,
+			COALESCE(NULLIF(failure_reason, ''), '') AS reason,
+			COALESCE(NULLIF(failure_message, ''), '') AS message,
+			COALESCE(NULLIF(failure_details, ''), '') AS details,
+			COALESCE(NULLIF(history_fetch_error, ''), '') AS fetch_error,
+			involved_emails,
+			COUNT(*) OVER() AS total_count
+		FROM workflow_failures
+		WHERE %s
+		ORDER BY close_time_ns DESC
+		LIMIT $%d OFFSET $%d`,
+		strings.Join(where, " AND "),
+		limitPlaceholder,
+		offsetPlaceholder,
+	)
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query stored history search failures: %w", err)
+	}
+	defer rows.Close()
+
+	results := make([]RecentWorkflow, 0, limit)
+	total := 0
+	for rows.Next() {
+		var item RecentWorkflow
+		var closeStatus int
+		var closeTimeNS int64
+		var reason string
+		var message string
+		var details string
+		var fetchError string
+		var involvedEmails []string
+		var rowTotal int
+		if err := rows.Scan(
+			&item.WorkflowID,
+			&item.RunID,
+			&item.WorkflowType,
+			&item.TaskList,
+			&closeStatus,
+			&closeTimeNS,
+			&reason,
+			&message,
+			&details,
+			&fetchError,
+			pq.Array(&involvedEmails),
+			&rowTotal,
+		); err != nil {
+			return nil, 0, fmt.Errorf("scan stored history search failure: %w", err)
+		}
+		if rowTotal > total {
+			total = rowTotal
+		}
+		item.Status = workflowCloseStatusLabel(closeStatus)
+		item.CloseTime = time.Unix(0, closeTimeNS).Format("2006-01-02 15:04:05")
+		item.FailureReason = storedActivityErrorText(reason, message, details, fetchError, item.Status)
+		item.InvolvedEmails = involvedEmails
+		results = append(results, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("iterate stored history search failures: %w", err)
+	}
+
+	attachWorkflowRCAToRecentFailures(tenantID, results)
+	return results, total, nil
 }
 
 // ============================================================
@@ -4680,11 +4899,15 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 
 	workflowCategory := strings.TrimSpace(r.URL.Query().Get("workflow_category"))
 	emailSearch := strings.TrimSpace(r.URL.Query().Get("email_search"))
+	historySearch := strings.TrimSpace(r.URL.Query().Get("history_search"))
 	if emailSearch == "" {
 		emailSearch = strings.TrimSpace(r.URL.Query().Get("recipient_email"))
 	}
 	if emailSearch != "" {
 		workflowCategory = "email"
+	}
+	if strings.TrimSpace(workflowCategory) != "" {
+		historySearch = ""
 	}
 
 	// Parse activity_status_filter from query string for activity errors (comma-separated)
@@ -4744,7 +4967,7 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 	// stored Cadence history breakdown below.
 	queryLimit := limit
 	queryOffset := offset
-	if emailSearch != "" {
+	if emailSearch != "" || historySearch != "" {
 		queryLimit = 500
 		queryOffset = 0
 	}
@@ -4769,6 +4992,16 @@ func workflowsHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			apiResp.RecentFailed = matches[offset:end]
 		}
+	}
+	if historySearch != "" {
+		matches, total, err := loadStoredHistorySearchFailures(r.Context(), tenant.ID, tasklistWindow, fromNanos, toNanos, tasklistFilter, statusFilter, historySearch, limit, offset)
+		if err != nil {
+			log.Printf("ERROR: load stored history search tenant %d: %v", tenant.ID, err)
+			writeJSONError(w, fmt.Sprintf("load stored history search: %v", err), http.StatusInternalServerError)
+			return
+		}
+		apiResp.RecentFailed = matches
+		apiResp.TotalFailed = total
 	}
 	if useStoredActivityBreakdown {
 		storedActivityErrors, err := loadStoredActivityErrors(r.Context(), tenant.ID, tasklistWindow, fromNanos, toNanos, tasklistFilter, activityStatusConditions)
