@@ -1,0 +1,134 @@
+Need a feature: showing all the failed emails workflows and search filter with recipient email.
+
+so in the http://localhost:5173/recent-failures
+i am thinking of adding option to select "Email Workflows" 
+so when use selects it, we show another search filter below the bar (only when email workflows option selected) 
+
+like Email Workflows selection does work on Type (Column) would be "WorkflowType like "%email%""
+but now other issue is that there filtering recipient emails present in that workflows,
+because if you check workflows list: /Users/vinaybhupelli/Repos/appointy-workspace/backend/background/docs/AppointyX/AppointyX_All_Events.md
+
+each workflow having different input and workflows might fail at different activities/stages, if everything goes well email gets sent. how can i get the recipient emails from the workflow history, i am thinking of keeping workflowType and its history but to where we can get the email id. 
+
+i know this is very complex feature but we need a way to do this, find solutions to do this feature!
+
+---
+
+can you also add a filter, to show 1 week failed workflows (till now we have 1Day limit) 
+in each page we have window filter (i am talking about that window)
+
+---
+
+can you also add a filter, to show 1 week workflows (till now we have 1Day limit) 
+in each page we have window filter (i am talking about that window)
+
+---
+
+can you also add a filter, to show 1 week workflows (till now we have 1Day limit) 
+in each page we have window filter (i am talking about that window)
+
+keep a limit in the UI to show workflows (as we are showing for 1 week, for the rest of the options we dont require any limits)
+
+---
+
+it is not working properly, i see failed workflows in the last 1d, but now in last 1w 
+check whats happening
+
+---
+
+now add another window last 30d
+
+---
+
+now add another window last 30d
+
+just make the changes of backend and frontend, i will restart them from my end!
+
+---
+
+# Files mentioned by the user:
+
+## codex-clipboard-42631ea6-7e18-4740-981f-e4f76fa136b6.png: /var/folders/08/qj1b__kx0fl3sjbw422ddvw80000gn/T/codex-clipboard-42631ea6-7e18-4740-981f-e4f76fa136b6.png
+
+## My request for Codex:
+if you see there is a workflow with id: db615755-2dca-4ecb-81d0-0dca8fdf1b13_3
+and email search filter as bharat+vikings@appointy.com
+but why it is showing db615755-2dca-4ecb-81d0-0dca8fdf1b13_3
+in the list, if you check the history that workflow wont have this email, 
+
+something is wrong here why it is not picking up properly, cadence is running at 8234 port and es at 9000
+
+---
+
+# Files mentioned by the user:
+
+## codex-clipboard-42631ea6-7e18-4740-981f-e4f76fa136b6.png: /var/folders/08/qj1b__kx0fl3sjbw422ddvw80000gn/T/codex-clipboard-42631ea6-7e18-4740-981f-e4f76fa136b6.png
+## My request for Codex:
+if you see there is a workflow with id: db615755-2dca-4ecb-81d0-0dca8fdf1b13_3
+and email search filter as bharat+vikings@appointy.com
+but why it is showing db615755-2dca-4ecb-81d0-0dca8fdf1b13_3
+in the list, if you check the history that workflow wont have this email, 
+
+something is wrong here why it is not picking up properly, cadence is running at 8234 port and es at 9000
+how about we store emails we found in the workflow when we get the workflow history we separate out emails so that searching would be easier, because on the UI it is so much time to render the page and i am unable to understand whether UI updated or not, add a separate view column to see "Emails involved" only when type is "Email Workflows"
+
+---
+
+# Files mentioned by the user:
+
+## codex-clipboard-42631ea6-7e18-4740-981f-e4f76fa136b6.png: /var/folders/08/qj1b__kx0fl3sjbw422ddvw80000gn/T/codex-clipboard-42631ea6-7e18-4740-981f-e4f76fa136b6.png
+## My request for Codex:
+if you see there is a workflow with id: db615755-2dca-4ecb-81d0-0dca8fdf1b13_3
+and email search filter as bharat+vikings@appointy.com
+but why it is showing db615755-2dca-4ecb-81d0-0dca8fdf1b13_3
+in the list, if you check the history that workflow wont have this email, 
+
+something is wrong here why it is not picking up properly, cadence is running at 8234 port and es at 9000
+how about we store emails we found in the workflow when we get the workflow history we separate out emails so that searching would be easier, because on the UI it is so much time to render the page and i am unable to understand whether UI updated or not, add a separate view column to see "Emails involved" only when type is "Email Workflows"
+
+also now its not about recipient emails i guess, as we are using the regex on emails, so we might get from workflows history fetch after.
+
+---
+
+make commit for this changes and write proper commit log (such that even product team can understand what have changed)
+
+---
+
+now lets work on when type: "all workflows", add a search bar (to search any string the workflow json history)
+
+when users enters something (stop the auto fetch new updates from ES, if there is no char then let auto fetch things, because here string finding happens and parallel auto runs making ui glitch because workflows become incosnistent string find might get trigger again) 
+
+this features helps us find any string in the workflow we stored! 
+it helps in searching service id, appointment id, etc (it can be any so we cant store them in the db) earlier we stored emails because we needed them to db and we expecting them too.
+
+---
+
+# Files mentioned by the user:
+
+## codex-clipboard-6e49482b-b3f3-4564-a4c3-4dccb3d98d58.png: /var/folders/08/qj1b__kx0fl3sjbw422ddvw80000gn/T/codex-clipboard-6e49482b-b3f3-4564-a4c3-4dccb3d98d58.png
+
+## My request for Codex:
+search is not working when i enter values in the search bar, it is not searching/finding it (there need to be loading) till the respones comes (as already auto reload is off)
+
+---
+
+i have searched with REDACTED it is working i have searched with grp_01HDJZ415H3EX03D12N99VXFTZ/com_01HDJZ416M5B1E5XCQYNMFGFT0/loc_01HDJZ41F89533AYW69QCSZJR1/apt_01KWKGGW5WTRCJPRSYMGEVM7Z7 it is not working
+
+this string is present in the same workflow but it is not finding it. just like how we search in ide i want the same in reading the workflow json
+
+---
+
+history search [search workflow history json]
+
+in the UI just change the name -> just make it "search" and in the typing placholder "find by workflow details"
+
+also fix: in all the pages there is from and to selection it is working correctly, when i set these details in the UI we need to show details belonging to that date and time only, check how can we do it
+
+---
+
+# Files mentioned by the user:
+
+## codex-clipboard-eb9c2545-df16-42e4-b2b8-fb401a086d7f.png: /var/folders/08/qj1b__kx0fl3sjbw422ddvw80000gn/T/codex-clipboard-eb9c2545-df16-42e4-b2b8-fb401a086d7f.png
+
+## My request for Codex:
+make the table scrollable horizontally so that i can see details properly, due to horizontal width few of the columsn only showing half of the details
