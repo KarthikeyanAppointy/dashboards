@@ -1,9 +1,64 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useAuth } from "../auth/AuthContext";
 import WorkflowHistoryModal from "./WorkflowHistoryModal";
+import RcaReportModal from "./RcaReportModal";
+import ColumnVisibilityPicker from "./ColumnVisibilityPicker";
 import "./RecentFailures.css";
 
 const STATUS_OPTIONS = ["Failed", "TimedOut"];
+const IMPACT_FILTER_STORAGE_KEY = "background-slo.recent-failures.impact-only";
+const COLUMN_STORAGE_KEY = "background-slo.recent-failures.columns";
+const RECENT_FAILURE_COLUMN_OPTIONS = [
+  { key: "triggerAction", label: "Trigger Action" },
+  { key: "workflowRun", label: "Workflow / Run" },
+  { key: "failureReason", label: "Failure Reason" },
+  { key: "customerImpact", label: "Customer Impact" },
+  { key: "workflowType", label: "Workflow Type" },
+  { key: "tasklist", label: "Tasklist" },
+  { key: "status", label: "Status" },
+  { key: "closeTime", label: "Close Time" },
+  { key: "triggered", label: "Triggered" },
+  { key: "lastPipeline", label: "Last Pipeline" },
+];
+
+function usesCustomerPreset(persona, role) {
+  const normalizedPersona = String(persona || "").toLowerCase();
+  if (normalizedPersona === "qa" || normalizedPersona === "ceam") {
+    return true;
+  }
+  const normalizedRole = String(role || "").toLowerCase();
+  if (normalizedRole === "admin" || normalizedRole === "user") {
+    return false;
+  }
+  return normalizedPersona !== "developer" && normalizedPersona !== "";
+}
+
+function defaultRecentFailureColumns(persona, role, canShowPipelineColumns) {
+  if (usesCustomerPreset(persona, role)) {
+    return [
+      "failureReason",
+      "customerImpact",
+      "workflowType",
+      "status",
+      "closeTime",
+    ];
+  }
+
+  const columns = [
+    "workflowRun",
+    "failureReason",
+    "customerImpact",
+    "workflowType",
+    "tasklist",
+    "status",
+    "closeTime",
+  ];
+  if (canShowPipelineColumns) {
+    columns.unshift("triggerAction");
+    columns.push("triggered", "lastPipeline");
+  }
+  return columns;
+}
 
 function recentFailureKey(workflowId, runId) {
   return `${workflowId || ""}::${runId || ""}`;
@@ -267,9 +322,12 @@ function RecentFailures({
   selectedTenantId,
   selectedTenant,
   notificationsEnabled,
+  userPersona,
+  userRole,
 }) {
   const { authFetch } = useAuth();
   const [historyWorkflow, setHistoryWorkflow] = useState(null);
+  const [rcaWorkflow, setRcaWorkflow] = useState(null);
   const pageSize = limit || 20;
   const currentPage = Math.floor(offset / pageSize) + 1;
   const totalPages = Math.ceil(totalFailed / pageSize);
@@ -283,11 +341,140 @@ function RecentFailures({
   );
   const [triggering, setTriggering] = useState({});
   const [triggeredMap, setTriggeredMap] = useState({});
-  const extraPipelineColumns =
-    codefacPipelines && codefacPipelines.length > 0 && notificationsEnabled
-      ? 3
-      : 0;
-  const emptyColSpan = 6 + extraPipelineColumns;
+  const [impactOnly, setImpactOnly] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(IMPACT_FILTER_STORAGE_KEY) === "true";
+  });
+  const canShowPipelineColumns =
+    codefacPipelines && codefacPipelines.length > 0 && notificationsEnabled;
+  const [visibleColumns, setVisibleColumns] = useState(() => {
+    if (typeof window === "undefined") {
+      return defaultRecentFailureColumns("developer", "user", false);
+    }
+    try {
+      const saved = JSON.parse(
+        window.localStorage.getItem(COLUMN_STORAGE_KEY) || "null",
+      );
+      return Array.isArray(saved)
+        ? saved
+        : defaultRecentFailureColumns("developer", "user", false);
+    } catch {
+      return defaultRecentFailureColumns("developer", "user", false);
+    }
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const requiresImpactDefault = usesCustomerPreset(userPersona, userRole);
+    const saved = window.localStorage.getItem(IMPACT_FILTER_STORAGE_KEY);
+    if (requiresImpactDefault && saved !== "true") {
+      setImpactOnly(true);
+      window.localStorage.setItem(IMPACT_FILTER_STORAGE_KEY, "true");
+      return;
+    }
+    if (!requiresImpactDefault && saved !== null) {
+      setImpactOnly(saved === "true");
+    }
+  }, [userPersona, userRole]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        IMPACT_FILTER_STORAGE_KEY,
+        String(impactOnly),
+      );
+    }
+  }, [impactOnly]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.localStorage.getItem(COLUMN_STORAGE_KEY);
+    if (!saved) {
+      const defaults = defaultRecentFailureColumns(
+        userPersona || "developer",
+        userRole || "user",
+        Boolean(canShowPipelineColumns),
+      );
+      setVisibleColumns(defaults);
+      window.localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(defaults));
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(saved);
+      if (!Array.isArray(parsed)) return;
+      const allowed = new Set(
+        RECENT_FAILURE_COLUMN_OPTIONS.filter((option) =>
+          option.key === "triggerAction" ||
+          option.key === "triggered" ||
+          option.key === "lastPipeline"
+            ? canShowPipelineColumns
+            : true,
+        ).map((option) => option.key),
+      );
+      const sanitized = parsed.filter((key) => allowed.has(key));
+      const nextVisible =
+        sanitized.length > 0
+          ? sanitized
+          : defaultRecentFailureColumns(
+              userPersona || "developer",
+              userRole || "user",
+              Boolean(canShowPipelineColumns),
+            );
+      setVisibleColumns(nextVisible);
+      window.localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(nextVisible));
+    } catch {
+      const defaults = defaultRecentFailureColumns(
+        userPersona || "developer",
+        userRole || "user",
+        Boolean(canShowPipelineColumns),
+      );
+      setVisibleColumns(defaults);
+      window.localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(defaults));
+    }
+  }, [canShowPipelineColumns, userPersona, userRole]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        COLUMN_STORAGE_KEY,
+        JSON.stringify(visibleColumns),
+      );
+    }
+  }, [visibleColumns]);
+
+  const availableColumnOptions = RECENT_FAILURE_COLUMN_OPTIONS.filter((option) =>
+    option.key === "triggerAction" ||
+    option.key === "triggered" ||
+    option.key === "lastPipeline"
+      ? canShowPipelineColumns
+      : true,
+  );
+  const showColumn = (key) => visibleColumns.includes(key);
+  const emptyColSpan =
+    availableColumnOptions.filter((option) => showColumn(option.key)).length || 1;
+
+  const toggleColumn = (key) => {
+    setVisibleColumns((current) => {
+      const isVisible = current.includes(key);
+      if (isVisible && current.length === 1) {
+        return current;
+      }
+      return isVisible
+        ? current.filter((columnKey) => columnKey !== key)
+        : [...current, key];
+    });
+  };
+
+  const resetColumns = () => {
+    setVisibleColumns(
+      defaultRecentFailureColumns(
+        userPersona || "developer",
+        userRole || "user",
+        Boolean(canShowPipelineColumns),
+      ),
+    );
+  };
 
   const filteredFailures = (failures || []).filter((f) => {
     const statusMatch =
@@ -296,7 +483,8 @@ function RecentFailures({
       statusFilter.includes(f.status);
     const tasklistMatch =
       tasklistFilter.length === 0 || tasklistFilter.includes(f.tasklist);
-    return statusMatch && tasklistMatch;
+    const impactMatch = !impactOnly || f.has_customer_impact;
+    return statusMatch && tasklistMatch && impactMatch;
   });
 
   // Sync selectedPipelineId when pipelines change
@@ -436,6 +624,12 @@ function RecentFailures({
           onClose={() => setHistoryWorkflow(null)}
         />
       )}
+      {rcaWorkflow && (
+        <RcaReportModal
+          record={rcaWorkflow}
+          onClose={() => setRcaWorkflow(null)}
+        />
+      )}
       <div className="section-header">
         <div className="section-header-left">
           <h2 className="section-title">Recent Failed / Timed Out Workflows</h2>
@@ -529,6 +723,26 @@ function RecentFailures({
           />
         </div>
 
+        <div className="filter-group">
+          <span className="filter-label">RCA</span>
+          <button
+            className={`filter-chip${impactOnly ? " active" : ""}`}
+            onClick={() => setImpactOnly((current) => !current)}
+          >
+            Customer impact only
+          </button>
+        </div>
+
+        <div className="filter-group">
+          <span className="filter-label">View</span>
+          <ColumnVisibilityPicker
+            options={availableColumnOptions}
+            visibleKeys={visibleColumns}
+            onToggle={toggleColumn}
+            onReset={resetColumns}
+          />
+        </div>
+
         {codefacPipelines && codefacPipelines.length > 0 && (
           <div className="filter-group">
             <span className="filter-label">Pipeline</span>
@@ -557,23 +771,28 @@ function RecentFailures({
           <table className="failures-table">
             <thead>
               <tr>
-                {codefacPipelines &&
-                  codefacPipelines.length > 0 &&
-                  notificationsEnabled && <th style={{ width: "36px" }}></th>}
-                <th className="col-workflow-run">Workflow / Run</th>
-                <th className="col-failure-reason">Failure Reason</th>
-                <th className="col-workflow-type">Type</th>
-                <th className="col-tasklist">Tasklist</th>
-                <th className="col-status">Status</th>
-                <th className="col-close-time">Close Time</th>
-                {codefacPipelines &&
-                  codefacPipelines.length > 0 &&
-                  notificationsEnabled && (
-                    <>
-                      <th style={{ width: "60px" }}>Triggered</th>
-                      <th style={{ width: "110px" }}>Last Pipeline</th>
-                    </>
-                  )}
+                {showColumn("triggerAction") && <th style={{ width: "36px" }}></th>}
+                {showColumn("workflowRun") && (
+                  <th className="col-workflow-run">Workflow / Run</th>
+                )}
+                {showColumn("failureReason") && (
+                  <th className="col-failure-reason">Failure Reason</th>
+                )}
+                {showColumn("workflowType") && (
+                  <th className="col-workflow-type">Type</th>
+                )}
+                {showColumn("customerImpact") && (
+                  <th className="col-customer-impact">Customer Impact</th>
+                )}
+                {showColumn("tasklist") && <th className="col-tasklist">Tasklist</th>}
+                {showColumn("status") && <th className="col-status">Status</th>}
+                {showColumn("closeTime") && (
+                  <th className="col-close-time">Close Time</th>
+                )}
+                {showColumn("triggered") && <th style={{ width: "60px" }}>Triggered</th>}
+                {showColumn("lastPipeline") && (
+                  <th style={{ width: "110px" }}>Last Pipeline</th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -590,23 +809,28 @@ function RecentFailures({
           <table className="failures-table">
             <thead>
               <tr>
-                {codefacPipelines &&
-                  codefacPipelines.length > 0 &&
-                  notificationsEnabled && <th style={{ width: "36px" }}></th>}
-                <th className="col-workflow-run">Workflow / Run</th>
-                <th className="col-failure-reason">Failure Reason</th>
-                <th className="col-workflow-type">Type</th>
-                <th className="col-tasklist">Tasklist</th>
-                <th className="col-status">Status</th>
-                <th className="col-close-time">Close Time</th>
-                {codefacPipelines &&
-                  codefacPipelines.length > 0 &&
-                  notificationsEnabled && (
-                    <>
-                      <th style={{ width: "60px" }}>Triggered</th>
-                      <th style={{ width: "110px" }}>Last Pipeline</th>
-                    </>
-                  )}
+                {showColumn("triggerAction") && <th style={{ width: "36px" }}></th>}
+                {showColumn("workflowRun") && (
+                  <th className="col-workflow-run">Workflow / Run</th>
+                )}
+                {showColumn("failureReason") && (
+                  <th className="col-failure-reason">Failure Reason</th>
+                )}
+                {showColumn("workflowType") && (
+                  <th className="col-workflow-type">Type</th>
+                )}
+                {showColumn("customerImpact") && (
+                  <th className="col-customer-impact">Customer Impact</th>
+                )}
+                {showColumn("tasklist") && <th className="col-tasklist">Tasklist</th>}
+                {showColumn("status") && <th className="col-status">Status</th>}
+                {showColumn("closeTime") && (
+                  <th className="col-close-time">Close Time</th>
+                )}
+                {showColumn("triggered") && <th style={{ width: "60px" }}>Triggered</th>}
+                {showColumn("lastPipeline") && (
+                  <th style={{ width: "110px" }}>Last Pipeline</th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -615,19 +839,12 @@ function RecentFailures({
                   triggeredMap[recentFailureKey(f.workflow_id, f.run_id)];
                 const triggerMeta = pipelineStatusMeta(triggerEntry?.status);
                 return (
-                <tr
-                  key={idx}
-                  className={canViewHistory ? "failures-row-clickable" : ""}
-                  onClick={(e) => handleRowClick(f, e)}
-                  title={
-                    canViewHistory
-                      ? "Click to view workflow history"
-                      : undefined
-                  }
-                >
-                  {codefacPipelines &&
-                    codefacPipelines.length > 0 &&
-                    notificationsEnabled && (
+                  <tr
+                    key={idx}
+                    className={canViewHistory ? "failures-row-clickable" : ""}
+                    onClick={(e) => handleRowClick(f, e)}
+                  >
+                    {showColumn("triggerAction") && (
                       <td style={{ textAlign: "center", padding: "6px" }}>
                         <button
                           className="pipeline-trigger-btn"
@@ -661,109 +878,168 @@ function RecentFailures({
                         </button>
                       </td>
                     )}
-                  <td className="cell-id">
-                    <div className="cell-id-stack">
-                      <div className="cell-id-line">
-                        <span className="cell-id-label">Workflow</span>
-                        <code title={f.workflow_id}>{f.workflow_id}</code>
-                      </div>
-                      <div className="cell-id-line">
-                        <span className="cell-id-label">Run</span>
-                        <code title={f.run_id}>{f.run_id}</code>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="cell-reason" title={f.failure_reason || ""}>
-                    {f.failure_reason ? (
-                      <code>{f.failure_reason}</code>
-                    ) : (
-                      <span className="cell-reason-empty">—</span>
+                    {showColumn("workflowRun") && (
+                      <td className="cell-id">
+                        <div className="cell-id-stack">
+                          <div className="cell-id-line">
+                            <span className="cell-id-label">Workflow</span>
+                            <code title={f.workflow_id}>{f.workflow_id}</code>
+                          </div>
+                          <div className="cell-id-line">
+                            <span className="cell-id-label">Run</span>
+                            <code title={f.run_id}>{f.run_id}</code>
+                          </div>
+                        </div>
+                      </td>
                     )}
-                  </td>
-                  <td className="cell-type" title={f.workflow_type}>
-                    {f.workflow_type}
-                  </td>
-                  <td className="cell-tasklist" title={f.tasklist}>
-                    <code>{f.tasklist}</code>
-                  </td>
-                  <td>
-                    <span
-                      className={`status-badge ${getStatusClass(f.status)}`}
-                    >
-                      {f.status}
-                    </span>
-                  </td>
-                  <td className="cell-time">{f.close_time}</td>
-                  {codefacPipelines &&
-                    codefacPipelines.length > 0 &&
-                    notificationsEnabled && (
-                      <>
-                        <td style={{ textAlign: "center" }}>
-                          {triggerMeta ? (
+                    {showColumn("failureReason") && (
+                      <td className="cell-reason" title={f.failure_reason || ""}>
+                        {f.failure_reason ? (
+                          <code>{f.failure_reason}</code>
+                        ) : (
+                          <span className="cell-reason-empty">—</span>
+                        )}
+                      </td>
+                    )}
+                    {showColumn("workflowType") && (
+                      <td className="cell-type">
+                        {f.workflow_type}
+                      </td>
+                    )}
+                    {showColumn("customerImpact") && (
+                      <td className="cell-impact">
+                        {f.has_rca ? (
+                          <div className="cell-impact-stack">
                             <span
-                              title={triggerMeta.title}
-                              style={{
-                                color: triggerMeta.color,
-                                fontSize: 14,
-                                fontWeight: 600,
-                              }}
+                              className={`cell-impact-pill${f.has_customer_impact ? " has-impact" : ""}`}
                             >
-                              {triggerMeta.icon}
+                              {f.has_customer_impact
+                                ? "Customer impact"
+                                : "No impact noted"}
                             </span>
-                          ) : (
-                            <span
-                              style={{
-                                color: "var(--fg-tertiary)",
-                                fontSize: 11,
-                              }}
-                            >
-                              —
-                            </span>
-                          )}
-                        </td>
-                        <td
-                          style={{
-                            fontSize: 11,
-                            color: "var(--fg-secondary)",
-                          }}
+                            <p className="cell-impact-preview">
+                              {f.customer_impact_details ||
+                                f.customer_impact_summary ||
+                                f.rca_summary ||
+                                "Open the RCA report for details."}
+                            </p>
+                            <div className="cell-impact-actions">
+                              <button
+                                type="button"
+                                className="cell-impact-action"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setRcaWorkflow(f);
+                                }}
+                              >
+                                View RCA
+                              </button>
+                              {f.open_mr_url && (
+                                <a
+                                  className="cell-impact-action"
+                                  href={f.open_mr_url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  onClick={(event) => event.stopPropagation()}
+                                >
+                                  {f.open_mr_label &&
+                                  f.open_mr_label !== f.open_mr_url
+                                    ? f.open_mr_label
+                                    : "Open MR/PR"}
+                                </a>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="cell-reason-empty">No RCA yet</span>
+                        )}
+                      </td>
+                    )}
+                    {showColumn("tasklist") && (
+                      <td className="cell-tasklist" title={f.tasklist}>
+                        <code>{f.tasklist}</code>
+                      </td>
+                    )}
+                    {showColumn("status") && (
+                      <td>
+                        <span
+                          className={`status-badge ${getStatusClass(f.status)}`}
                         >
-                          {triggerEntry ? (
-                            <>
-                              <span
-                                style={{
-                                  fontWeight: 500,
-                                  color: "var(--fg)",
-                                }}
-                              >
-                                {triggerEntry.pipeline || ""}
-                              </span>
-                              <span
-                                style={{
-                                  display: "block",
-                                  fontSize: 10,
-                                  color: "var(--fg-tertiary)",
-                                }}
-                              >
-                                {triggerEntry.time || ""}
-                              </span>
-                              <span
-                                style={{
-                                  display: "block",
-                                  fontSize: 10,
-                                  color: "var(--fg-tertiary)",
-                                  textTransform: "capitalize",
-                                }}
-                              >
-                                {triggerEntry.source}
-                              </span>
-                            </>
-                          ) : (
-                            "—"
-                          )}
-                        </td>
-                      </>
+                          {f.status}
+                        </span>
+                      </td>
                     )}
-                </tr>
+                    {showColumn("closeTime") && (
+                      <td className="cell-time">{f.close_time}</td>
+                    )}
+                    {showColumn("triggered") && (
+                      <td style={{ textAlign: "center" }}>
+                        {triggerMeta ? (
+                          <span
+                            title={triggerMeta.title}
+                            style={{
+                              color: triggerMeta.color,
+                              fontSize: 14,
+                              fontWeight: 600,
+                            }}
+                          >
+                            {triggerMeta.icon}
+                          </span>
+                        ) : (
+                          <span
+                            style={{
+                              color: "var(--fg-tertiary)",
+                              fontSize: 11,
+                            }}
+                          >
+                            —
+                          </span>
+                        )}
+                      </td>
+                    )}
+                    {showColumn("lastPipeline") && (
+                      <td
+                        style={{
+                          fontSize: 11,
+                          color: "var(--fg-secondary)",
+                        }}
+                      >
+                        {triggerEntry ? (
+                          <>
+                            <span
+                              style={{
+                                fontWeight: 500,
+                                color: "var(--fg)",
+                              }}
+                            >
+                              {triggerEntry.pipeline || ""}
+                            </span>
+                            <span
+                              style={{
+                                display: "block",
+                                fontSize: 10,
+                                color: "var(--fg-tertiary)",
+                              }}
+                            >
+                              {triggerEntry.time || ""}
+                            </span>
+                            <span
+                              style={{
+                                display: "block",
+                                fontSize: 10,
+                                color: "var(--fg-tertiary)",
+                                textTransform: "capitalize",
+                              }}
+                            >
+                              {triggerEntry.source}
+                            </span>
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                    )}
+                  </tr>
                 );
               })}
             </tbody>

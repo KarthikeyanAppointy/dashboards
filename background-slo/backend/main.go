@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
@@ -143,8 +144,9 @@ type RBACEntry struct {
 	UserEmail string `json:"user_email"`
 	TenantID  int    `json:"tenant_id"`
 	Role      string `json:"role"` // "admin" or "user"
+	Persona   string `json:"persona"`
 	// Permissions is a JSON array of sidebar sections the user can access.
-	// Example: ["overview","failures","ses","notifications"]
+	// Example: ["overview","failures","ses","pipeline-requests","notifications"]
 	Permissions  []string   `json:"permissions"`
 	LastActivity *time.Time `json:"last_activity"`
 	CreatedAt    time.Time  `json:"created_at"`
@@ -190,6 +192,82 @@ type AlertHistory struct {
 	RunID         string    `json:"run_id"`
 	SentAt        time.Time `json:"sent_at"`
 	CreatedAt     time.Time `json:"created_at"`
+}
+
+type WorkflowRCAView struct {
+	HasRCA                bool       `json:"has_rca"`
+	HasCustomerImpact     bool       `json:"has_customer_impact"`
+	EventID               string     `json:"event_id"`
+	RCATitle              string     `json:"rca_title"`
+	RCASummary            string     `json:"rca_summary"`
+	CustomerImpactSummary string     `json:"customer_impact_summary"`
+	CustomerImpactDetails string     `json:"customer_impact_details"`
+	CustomerImpactItems   []string   `json:"customer_impact_items"`
+	RootCause             string     `json:"root_cause"`
+	Remediation           string     `json:"remediation"`
+	CurrentStatus         string     `json:"current_status"`
+	OpenMRURL             string     `json:"open_mr_url"`
+	OpenMRLabel           string     `json:"open_mr_label"`
+	RawReport             string     `json:"raw_report"`
+	RCAReceivedAt         *time.Time `json:"rca_received_at"`
+}
+
+type WorkflowRCAReport struct {
+	ID                    int
+	TenantID              int
+	Source                string
+	EventID               string
+	WorkflowID            string
+	RunID                 string
+	WorkflowType          string
+	Title                 string
+	Summary               string
+	CustomerImpactSummary string
+	CustomerImpactDetails string
+	CustomerImpactItems   []string
+	RootCause             string
+	Remediation           string
+	CurrentStatus         string
+	OpenMRURL             string
+	OpenMRLabel           string
+	RawReport             string
+	RaisedAt              *time.Time
+	WorkflowStartedAt     *time.Time
+	FailedAt              *time.Time
+	ReceivedAt            time.Time
+	UpdatedAt             time.Time
+}
+
+type codefacRCAIngestRequest struct {
+	TenantID            int      `json:"tenant_id"`
+	Domain              string   `json:"domain"`
+	DomainName          string   `json:"domain_name"`
+	WorkflowID          string   `json:"workflow_id"`
+	RunID               string   `json:"run_id"`
+	WorkflowType        string   `json:"workflow_type"`
+	EventID             string   `json:"event_id"`
+	Title               string   `json:"title"`
+	Summary             string   `json:"summary"`
+	CustomerImpact      string   `json:"customer_impact"`
+	CustomerImpactItems []string `json:"customer_impact_items"`
+	RootCause           string   `json:"root_cause"`
+	Remediation         string   `json:"remediation"`
+	CurrentStatus       string   `json:"current_status"`
+	OpenMRURL           string   `json:"open_mr_url"`
+	OpenMRLabel         string   `json:"open_mr_label"`
+	MRURL               string   `json:"mr_url"`
+	MRLabel             string   `json:"mr_label"`
+	PRURL               string   `json:"pr_url"`
+	PRLabel             string   `json:"pr_label"`
+	MergeRequestURL     string   `json:"merge_request_url"`
+	MergeRequestLabel   string   `json:"merge_request_label"`
+	PullRequestURL      string   `json:"pull_request_url"`
+	PullRequestLabel    string   `json:"pull_request_label"`
+	RawReport           string   `json:"raw_report"`
+	RaisedAt            string   `json:"raised_at"`
+	WorkflowStartedAt   string   `json:"workflow_started_at"`
+	FailedAt            string   `json:"failed_at"`
+	Source              string   `json:"source"`
 }
 
 // newUUIDv4 generates a UUID v4 string using crypto/rand.
@@ -432,6 +510,7 @@ type pipelineWorkflowErrorDetails struct {
 }
 
 type pipelineWorkflowFailureRow struct {
+	WorkflowRCAView
 	ID                  int        `json:"id"`
 	TenantID            int        `json:"tenant_id"`
 	PipelineID          int        `json:"pipeline_id"`
@@ -459,6 +538,7 @@ type pipelineWorkflowFailureRow struct {
 }
 
 type manualPipelineRequestRow struct {
+	WorkflowRCAView
 	ID             int       `json:"id"`
 	TenantID       int       `json:"tenant_id"`
 	PipelineName   string    `json:"pipeline_name"`
@@ -644,6 +724,287 @@ func EnsurePipelineWorkflowFailuresTable(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func EnsureWorkflowRCATable(db *sql.DB) error {
+	query := `
+	CREATE TABLE IF NOT EXISTS workflow_rca_reports (
+		id SERIAL PRIMARY KEY,
+		tenant_id INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+		source TEXT NOT NULL DEFAULT 'codefac',
+		event_id TEXT NOT NULL DEFAULT '',
+		workflow_id TEXT NOT NULL DEFAULT '',
+		run_id TEXT NOT NULL DEFAULT '',
+		workflow_type TEXT NOT NULL DEFAULT '',
+		title TEXT NOT NULL DEFAULT '',
+		summary TEXT NOT NULL DEFAULT '',
+		customer_impact_summary TEXT NOT NULL DEFAULT '',
+		customer_impact_details TEXT NOT NULL DEFAULT '',
+		customer_impact_items TEXT[] NOT NULL DEFAULT '{}',
+		root_cause TEXT NOT NULL DEFAULT '',
+		remediation TEXT NOT NULL DEFAULT '',
+		current_status TEXT NOT NULL DEFAULT '',
+		open_mr_url TEXT NOT NULL DEFAULT '',
+		open_mr_label TEXT NOT NULL DEFAULT '',
+		raw_report TEXT NOT NULL DEFAULT '',
+		raised_at TIMESTAMPTZ,
+		workflow_started_at TIMESTAMPTZ,
+		failed_at TIMESTAMPTZ,
+		received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		UNIQUE (tenant_id, run_id)
+	);`
+	if _, err := db.Exec(query); err != nil {
+		return fmt.Errorf("create workflow_rca_reports table: %w", err)
+	}
+	db.Exec(`ALTER TABLE workflow_rca_reports DROP CONSTRAINT IF EXISTS workflow_rca_reports_tenant_id_workflow_id_run_id_key`)
+	db.Exec(`ALTER TABLE workflow_rca_reports ADD CONSTRAINT workflow_rca_reports_tenant_id_run_id_key UNIQUE (tenant_id, run_id)`)
+
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_workflow_rca_reports_tenant_received ON workflow_rca_reports (tenant_id, received_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_workflow_rca_reports_tenant_workflow ON workflow_rca_reports (tenant_id, workflow_id, run_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_workflow_rca_reports_tenant_event ON workflow_rca_reports (tenant_id, event_id)`,
+	}
+	for _, stmt := range indexes {
+		if _, err := db.Exec(stmt); err != nil {
+			log.Printf("WARN: could not ensure workflow_rca_reports index %q: %v", stmt, err)
+		}
+	}
+	return nil
+}
+
+func workflowRCAHasCustomerImpact(view WorkflowRCAView) bool {
+	if len(view.CustomerImpactItems) > 0 {
+		return true
+	}
+	if strings.TrimSpace(view.CustomerImpactSummary) != "" {
+		return true
+	}
+	return strings.TrimSpace(view.CustomerImpactDetails) != ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func trimTextPreview(value string, max int) string {
+	text := strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	if text == "" || max <= 0 || len(text) <= max {
+		return text
+	}
+	if max == 1 {
+		return text[:1]
+	}
+	return text[:max-1] + "…"
+}
+
+func normalizeRBACPersona(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "qa":
+		return "qa"
+	case "ceam":
+		return "ceam"
+	default:
+		return "developer"
+	}
+}
+
+func normalizeImpactItems(items []string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		cleaned := strings.TrimSpace(strings.TrimLeft(item, "-*• \t"))
+		if cleaned == "" {
+			continue
+		}
+		if _, ok := seen[cleaned]; ok {
+			continue
+		}
+		seen[cleaned] = struct{}{}
+		out = append(out, cleaned)
+	}
+	return out
+}
+
+func summarizeImpact(items []string, details string) string {
+	if len(items) > 0 {
+		return trimTextPreview(items[0], 180)
+	}
+	return trimTextPreview(details, 180)
+}
+
+func buildWorkflowRCAView(record WorkflowRCAReport) WorkflowRCAView {
+	view := WorkflowRCAView{
+		HasRCA:                true,
+		EventID:               strings.TrimSpace(record.EventID),
+		RCATitle:              strings.TrimSpace(record.Title),
+		RCASummary:            strings.TrimSpace(record.Summary),
+		CustomerImpactSummary: strings.TrimSpace(record.CustomerImpactSummary),
+		CustomerImpactDetails: strings.TrimSpace(record.CustomerImpactDetails),
+		CustomerImpactItems:   normalizeImpactItems(record.CustomerImpactItems),
+		RootCause:             strings.TrimSpace(record.RootCause),
+		Remediation:           strings.TrimSpace(record.Remediation),
+		CurrentStatus:         strings.TrimSpace(record.CurrentStatus),
+		OpenMRURL:             strings.TrimSpace(record.OpenMRURL),
+		OpenMRLabel:           strings.TrimSpace(record.OpenMRLabel),
+		RawReport:             strings.TrimSpace(record.RawReport),
+		RCAReceivedAt:         &record.ReceivedAt,
+	}
+	if view.CustomerImpactSummary == "" {
+		view.CustomerImpactSummary = summarizeImpact(view.CustomerImpactItems, view.CustomerImpactDetails)
+	}
+	view.HasCustomerImpact = workflowRCAHasCustomerImpact(view)
+	return view
+}
+
+type workflowRunRef struct {
+	WorkflowID string
+	RunID      string
+}
+
+func loadWorkflowRCALookup(tenantID int, refs []workflowRunRef) map[string]WorkflowRCAView {
+	if tenantID <= 0 || len(refs) == 0 {
+		return nil
+	}
+
+	args := []any{tenantID}
+	values := make([]string, 0, len(refs))
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		workflowID := strings.TrimSpace(ref.WorkflowID)
+		runID := strings.TrimSpace(ref.RunID)
+		if workflowID == "" || runID == "" {
+			continue
+		}
+		key := recentWorkflowLookupKey(workflowID, runID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		args = append(args, workflowID, runID)
+		values = append(values, fmt.Sprintf("($%d, $%d)", len(args)-1, len(args)))
+	}
+	if len(values) == 0 {
+		return nil
+	}
+
+	query := fmt.Sprintf(`
+		SELECT
+			refs.workflow_id,
+			refs.run_id,
+			wr.event_id,
+			wr.title,
+			wr.summary,
+			wr.customer_impact_summary,
+			wr.customer_impact_details,
+			wr.customer_impact_items,
+			wr.root_cause,
+			wr.remediation,
+			wr.current_status,
+			wr.open_mr_url,
+			wr.open_mr_label,
+			wr.raw_report,
+			wr.received_at
+		FROM workflow_rca_reports wr
+		JOIN (VALUES %s) AS refs(workflow_id, run_id)
+		  ON wr.run_id = refs.run_id
+		WHERE wr.tenant_id = $1`,
+		strings.Join(values, ", "),
+	)
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		log.Printf("WARN: workflow rca lookup tenant %d: %v", tenantID, err)
+		return nil
+	}
+	defer rows.Close()
+
+	out := make(map[string]WorkflowRCAView, len(values))
+	for rows.Next() {
+		var workflowID string
+		var runID string
+		var record WorkflowRCAReport
+		record.TenantID = tenantID
+		if err := rows.Scan(
+			&workflowID,
+			&runID,
+			&record.EventID,
+			&record.Title,
+			&record.Summary,
+			&record.CustomerImpactSummary,
+			&record.CustomerImpactDetails,
+			pq.Array(&record.CustomerImpactItems),
+			&record.RootCause,
+			&record.Remediation,
+			&record.CurrentStatus,
+			&record.OpenMRURL,
+			&record.OpenMRLabel,
+			&record.RawReport,
+			&record.ReceivedAt,
+		); err != nil {
+			log.Printf("WARN: workflow rca scan tenant %d: %v", tenantID, err)
+			continue
+		}
+		out[recentWorkflowLookupKey(workflowID, runID)] = buildWorkflowRCAView(record)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("WARN: workflow rca iteration tenant %d: %v", tenantID, err)
+	}
+	return out
+}
+
+func attachWorkflowRCAToRecentFailures(tenantID int, recent []RecentWorkflow) {
+	refs := make([]workflowRunRef, 0, len(recent))
+	for _, item := range recent {
+		refs = append(refs, workflowRunRef{WorkflowID: item.WorkflowID, RunID: item.RunID})
+	}
+	lookup := loadWorkflowRCALookup(tenantID, refs)
+	if len(lookup) == 0 {
+		return
+	}
+	for i := range recent {
+		if view, ok := lookup[recentWorkflowLookupKey(recent[i].WorkflowID, recent[i].RunID)]; ok {
+			recent[i].WorkflowRCAView = view
+		}
+	}
+}
+
+func attachWorkflowRCAToPipelineFailures(tenantID int, items []pipelineWorkflowFailureRow) {
+	refs := make([]workflowRunRef, 0, len(items))
+	for _, item := range items {
+		refs = append(refs, workflowRunRef{WorkflowID: item.WorkflowID, RunID: item.RunID})
+	}
+	lookup := loadWorkflowRCALookup(tenantID, refs)
+	if len(lookup) == 0 {
+		return
+	}
+	for i := range items {
+		if view, ok := lookup[recentWorkflowLookupKey(items[i].WorkflowID, items[i].RunID)]; ok {
+			items[i].WorkflowRCAView = view
+		}
+	}
+}
+
+func attachWorkflowRCAToManualPipelineRequests(tenantID int, items []manualPipelineRequestRow) {
+	refs := make([]workflowRunRef, 0, len(items))
+	for _, item := range items {
+		refs = append(refs, workflowRunRef{WorkflowID: item.WorkflowID, RunID: item.RunID})
+	}
+	lookup := loadWorkflowRCALookup(tenantID, refs)
+	if len(lookup) == 0 {
+		return
+	}
+	for i := range items {
+		if view, ok := lookup[recentWorkflowLookupKey(items[i].WorkflowID, items[i].RunID)]; ok {
+			items[i].WorkflowRCAView = view
+		}
+	}
 }
 
 func scanPipelineWorkflowFailure(row scanner) (*pipelineWorkflowFailureRow, error) {
@@ -1154,6 +1515,7 @@ func pipelineWorkflowFailuresHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, fmt.Sprintf("iterate manual pipeline requests: %v", err), http.StatusInternalServerError)
 			return
 		}
+		attachWorkflowRCAToManualPipelineRequests(tenantID, results)
 
 		writeJSON(w, map[string]any{
 			"results": results,
@@ -1191,6 +1553,7 @@ func pipelineWorkflowFailuresHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, fmt.Sprintf("iterate pipeline workflow failures: %v", err), http.StatusInternalServerError)
 		return
 	}
+	attachWorkflowRCAToPipelineFailures(tenantID, results)
 
 	writeJSON(w, map[string]any{
 		"results": results,
@@ -1402,6 +1765,9 @@ func EnsureRBACTable(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`ALTER TABLE rbac ADD COLUMN IF NOT EXISTS last_activity TIMESTAMPTZ`); err != nil {
 		log.Printf("WARN: could not add last_activity column: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE rbac ADD COLUMN IF NOT EXISTS persona TEXT NOT NULL DEFAULT 'developer'`); err != nil {
+		log.Printf("WARN: could not add persona column: %v", err)
 	}
 	return nil
 }
@@ -2070,6 +2436,7 @@ type RateData struct {
 
 // RecentWorkflow represents a single failed or timed-out workflow entry.
 type RecentWorkflow struct {
+	WorkflowRCAView
 	WorkflowID    string `json:"workflow_id"`
 	RunID         string `json:"run_id"`
 	WorkflowType  string `json:"workflow_type"`
@@ -3853,6 +4220,7 @@ func buildResponse(cfg Config, tenantID int, msResp *esMultiSearchResponse, limi
 				recentFailed[i].FailureReason = reason
 			}
 		}
+		attachWorkflowRCAToRecentFailures(tenantID, recentFailed)
 	}
 
 	// --- Parse tasklist latency ---
@@ -4347,7 +4715,7 @@ func tenantsHandler(w http.ResponseWriter, r *http.Request) {
 			newRole := "admin"
 			newPerms := []string{
 				"admin", "overview", "failures", "activity-errors", "p100-latency",
-				"ses", "notifications", "report-history", "peoples",
+				"ses", "pipeline-requests", "notifications", "report-history", "peoples",
 			}
 
 			db.Exec(`
@@ -4478,6 +4846,459 @@ func writeJSON(w http.ResponseWriter, data interface{}, statusCode int) {
 // writeJSONError writes a JSON error response.
 func writeJSONError(w http.ResponseWriter, message string, statusCode int) {
 	writeJSON(w, map[string]string{"error": message}, statusCode)
+}
+
+// ============================================================
+// Codefac RCA Ingestion
+// ============================================================
+
+func codefacIngestToken() string {
+	return strings.TrimSpace(getEnv("CODEFAC_RCA_INGEST_TOKEN", ""))
+}
+
+func matchesSecret(provided, expected string) bool {
+	if provided == "" || expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+}
+
+func authorizeCodefacIngest(r *http.Request) bool {
+	expected := codefacIngestToken()
+	if expected == "" {
+		return false
+	}
+
+	if matchesSecret(strings.TrimSpace(r.Header.Get("X-Codefac-Token")), expected) {
+		return true
+	}
+
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+		if matchesSecret(token, expected) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func parseIngestTime(raw string) (*time.Time, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, nil
+	}
+
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05",
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, trimmed); err == nil {
+			return &parsed, nil
+		}
+	}
+
+	if unixValue, err := strconv.ParseInt(trimmed, 10, 64); err == nil && unixValue > 0 {
+		switch {
+		case unixValue > 1e17:
+			parsed := time.Unix(0, unixValue)
+			return &parsed, nil
+		case unixValue > 1e14:
+			parsed := time.Unix(0, unixValue*1000)
+			return &parsed, nil
+		case unixValue > 1e11:
+			parsed := time.UnixMilli(unixValue)
+			return &parsed, nil
+		default:
+			parsed := time.Unix(unixValue, 0)
+			return &parsed, nil
+		}
+	}
+
+	return nil, fmt.Errorf("unsupported timestamp %q", raw)
+}
+
+func parseOpenMRValue(raw string) (string, string) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", ""
+	}
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		return value, value
+	}
+	return "", value
+}
+
+func normalizeReviewLinkFields(req *codefacRCAIngestRequest) {
+	if req == nil {
+		return
+	}
+	req.OpenMRURL = firstNonEmpty(
+		req.OpenMRURL,
+		req.MRURL,
+		req.PRURL,
+		req.MergeRequestURL,
+		req.PullRequestURL,
+	)
+	req.OpenMRLabel = firstNonEmpty(
+		req.OpenMRLabel,
+		req.MRLabel,
+		req.PRLabel,
+		req.MergeRequestLabel,
+		req.PullRequestLabel,
+	)
+	if req.OpenMRLabel == "" && req.OpenMRURL != "" {
+		req.OpenMRLabel = "Open MR/PR"
+	}
+}
+
+func joinSectionLines(lines []string) string {
+	trimmed := make([]string, 0, len(lines))
+	for _, line := range lines {
+		value := strings.TrimSpace(line)
+		if value == "" {
+			if len(trimmed) == 0 || trimmed[len(trimmed)-1] == "" {
+				continue
+			}
+			trimmed = append(trimmed, "")
+			continue
+		}
+		trimmed = append(trimmed, value)
+	}
+	return strings.TrimSpace(strings.Join(trimmed, "\n"))
+}
+
+func mergeRawRCAIntoRequest(req *codefacRCAIngestRequest) {
+	raw := strings.TrimSpace(req.RawReport)
+	if raw == "" {
+		return
+	}
+
+	sectionLines := map[string][]string{
+		"summary":        {},
+		"customerImpact": {},
+		"rootCause":      {},
+		"remediation":    {},
+		"currentStatus":  {},
+	}
+	currentSection := ""
+
+	for _, rawLine := range strings.Split(raw, "\n") {
+		line := strings.TrimRight(rawLine, "\r\t ")
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+
+		switch lower {
+		case "summary":
+			currentSection = "summary"
+			continue
+		case "customer impact":
+			currentSection = "customerImpact"
+			continue
+		case "root cause":
+			currentSection = "rootCause"
+			continue
+		case "remediation":
+			currentSection = "remediation"
+			continue
+		case "current status":
+			currentSection = "currentStatus"
+			continue
+		}
+
+		if strings.HasPrefix(lower, "sent using codefac") {
+			currentSection = ""
+			continue
+		}
+
+		if currentSection != "" {
+			sectionLines[currentSection] = append(sectionLines[currentSection], line)
+			continue
+		}
+
+		switch {
+		case strings.HasPrefix(lower, "rca:"):
+			req.Title = firstNonEmpty(req.Title, strings.TrimSpace(trimmed[4:]))
+		case strings.HasPrefix(lower, "domain:"):
+			domain := strings.TrimSpace(trimmed[len("Domain:"):])
+			req.Domain = firstNonEmpty(req.Domain, domain)
+			req.DomainName = firstNonEmpty(req.DomainName, domain)
+		case strings.HasPrefix(lower, "event id:"):
+			req.EventID = firstNonEmpty(req.EventID, strings.TrimSpace(trimmed[len("Event ID:"):]))
+		case strings.HasPrefix(lower, "run id:"):
+			req.RunID = firstNonEmpty(req.RunID, strings.TrimSpace(trimmed[len("Run ID:"):]))
+		case strings.HasPrefix(lower, "workflow:"):
+			req.WorkflowType = firstNonEmpty(req.WorkflowType, strings.TrimSpace(trimmed[len("Workflow:"):]))
+		case strings.HasPrefix(lower, "open mr:"):
+			mrURL, mrLabel := parseOpenMRValue(strings.TrimSpace(trimmed[len("Open MR:"):]))
+			req.OpenMRURL = firstNonEmpty(req.OpenMRURL, mrURL)
+			req.OpenMRLabel = firstNonEmpty(req.OpenMRLabel, mrLabel)
+		case strings.HasPrefix(lower, "open pr:"):
+			prURL, prLabel := parseOpenMRValue(strings.TrimSpace(trimmed[len("Open PR:"):]))
+			req.OpenMRURL = firstNonEmpty(req.OpenMRURL, prURL)
+			req.OpenMRLabel = firstNonEmpty(req.OpenMRLabel, prLabel)
+		case strings.HasPrefix(lower, "open merge request:"):
+			mrURL, mrLabel := parseOpenMRValue(strings.TrimSpace(trimmed[len("Open Merge Request:"):]))
+			req.OpenMRURL = firstNonEmpty(req.OpenMRURL, mrURL)
+			req.OpenMRLabel = firstNonEmpty(req.OpenMRLabel, mrLabel)
+		case strings.HasPrefix(lower, "open pull request:"):
+			prURL, prLabel := parseOpenMRValue(strings.TrimSpace(trimmed[len("Open Pull Request:"):]))
+			req.OpenMRURL = firstNonEmpty(req.OpenMRURL, prURL)
+			req.OpenMRLabel = firstNonEmpty(req.OpenMRLabel, prLabel)
+		}
+	}
+
+	req.Summary = firstNonEmpty(req.Summary, joinSectionLines(sectionLines["summary"]))
+	req.CustomerImpact = firstNonEmpty(req.CustomerImpact, joinSectionLines(sectionLines["customerImpact"]))
+	if len(req.CustomerImpactItems) == 0 {
+		req.CustomerImpactItems = normalizeImpactItems(sectionLines["customerImpact"])
+	}
+	req.RootCause = firstNonEmpty(req.RootCause, joinSectionLines(sectionLines["rootCause"]))
+	req.Remediation = firstNonEmpty(req.Remediation, joinSectionLines(sectionLines["remediation"]))
+	req.CurrentStatus = firstNonEmpty(req.CurrentStatus, joinSectionLines(sectionLines["currentStatus"]))
+	normalizeReviewLinkFields(req)
+}
+
+func formatCodefacRCAReport(req codefacRCAIngestRequest) string {
+	parts := make([]string, 0, 24)
+	if title := firstNonEmpty(req.Title); title != "" {
+		parts = append(parts, "RCA: "+title)
+	}
+	if domain := firstNonEmpty(req.DomainName, req.Domain); domain != "" {
+		parts = append(parts, "Domain: "+domain)
+	}
+	if req.EventID != "" {
+		parts = append(parts, "Event ID: "+req.EventID)
+	}
+	if req.RunID != "" {
+		parts = append(parts, "Run ID: "+req.RunID)
+	}
+	if req.WorkflowType != "" {
+		parts = append(parts, "Workflow: "+req.WorkflowType)
+	}
+	if label := firstNonEmpty(req.OpenMRLabel, req.OpenMRURL); label != "" {
+		parts = append(parts, "Open MR: "+label)
+	}
+
+	appendSection := func(title, body string) {
+		body = strings.TrimSpace(body)
+		if body == "" {
+			return
+		}
+		parts = append(parts, "", title, body)
+	}
+
+	appendSection("Summary", req.Summary)
+	if len(req.CustomerImpactItems) > 0 {
+		bullets := make([]string, 0, len(req.CustomerImpactItems))
+		for _, item := range normalizeImpactItems(req.CustomerImpactItems) {
+			bullets = append(bullets, "- "+item)
+		}
+		appendSection("Customer Impact", strings.Join(bullets, "\n"))
+	} else {
+		appendSection("Customer Impact", req.CustomerImpact)
+	}
+	appendSection("Root Cause", req.RootCause)
+	appendSection("Remediation", req.Remediation)
+	appendSection("Current Status", req.CurrentStatus)
+
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func lookupTenantByDomainIdentifier(identifier string) (*Tenant, error) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return nil, sql.ErrNoRows
+	}
+
+	var tenant Tenant
+	err := db.QueryRow(`
+		SELECT id, name, domain_id, domain_name, es_endpoint, es_index, es_api_key, audience_url, notifyhub_url, notifyhub_api_key, cadence_web_url, created_at, updated_at
+		FROM tenants
+		WHERE domain_name = $1 OR domain_id = $1 OR name = $1
+		ORDER BY id
+		LIMIT 1`,
+		identifier,
+	).Scan(
+		&tenant.ID,
+		&tenant.Name,
+		&tenant.DomainID,
+		&tenant.DomainName,
+		&tenant.ESEndpoint,
+		&tenant.ESIndex,
+		&tenant.ESApiKey,
+		&tenant.AudienceURL,
+		&tenant.NotifyHubURL,
+		&tenant.NotifyHubAPIKey,
+		&tenant.CadenceWebURL,
+		&tenant.CreatedAt,
+		&tenant.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &tenant, nil
+}
+
+func storeWorkflowRCAReport(ctx context.Context, tenantID int, req codefacRCAIngestRequest) error {
+	raisedAt, err := parseIngestTime(req.RaisedAt)
+	if err != nil {
+		return err
+	}
+	workflowStartedAt, err := parseIngestTime(req.WorkflowStartedAt)
+	if err != nil {
+		return err
+	}
+	failedAt, err := parseIngestTime(req.FailedAt)
+	if err != nil {
+		return err
+	}
+
+	source := firstNonEmpty(req.Source, "codefac")
+	customerImpactItems := normalizeImpactItems(req.CustomerImpactItems)
+	customerImpactDetails := firstNonEmpty(req.CustomerImpact, strings.Join(customerImpactItems, "\n"))
+	customerImpactSummary := summarizeImpact(customerImpactItems, customerImpactDetails)
+	rawReport := strings.TrimSpace(req.RawReport)
+	if rawReport == "" {
+		rawReport = formatCodefacRCAReport(req)
+	}
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO workflow_rca_reports (
+			tenant_id, source, event_id, workflow_id, run_id, workflow_type,
+			title, summary, customer_impact_summary, customer_impact_details,
+			customer_impact_items, root_cause, remediation, current_status,
+			open_mr_url, open_mr_label, raw_report, raised_at, workflow_started_at,
+			failed_at, received_at, updated_at
+		)
+		VALUES (
+			$1, $2, $3, $4, $5, $6,
+			$7, $8, $9, $10,
+			$11, $12, $13, $14,
+			$15, $16, $17, $18, $19,
+			$20, NOW(), NOW()
+		)
+		ON CONFLICT (tenant_id, run_id) DO UPDATE SET
+			source = EXCLUDED.source,
+			event_id = EXCLUDED.event_id,
+			workflow_id = EXCLUDED.workflow_id,
+			workflow_type = EXCLUDED.workflow_type,
+			title = EXCLUDED.title,
+			summary = EXCLUDED.summary,
+			customer_impact_summary = EXCLUDED.customer_impact_summary,
+			customer_impact_details = EXCLUDED.customer_impact_details,
+			customer_impact_items = EXCLUDED.customer_impact_items,
+			root_cause = EXCLUDED.root_cause,
+			remediation = EXCLUDED.remediation,
+			current_status = EXCLUDED.current_status,
+			open_mr_url = EXCLUDED.open_mr_url,
+			open_mr_label = EXCLUDED.open_mr_label,
+			raw_report = EXCLUDED.raw_report,
+			raised_at = EXCLUDED.raised_at,
+			workflow_started_at = EXCLUDED.workflow_started_at,
+			failed_at = EXCLUDED.failed_at,
+			received_at = NOW(),
+			updated_at = NOW()`,
+		tenantID,
+		source,
+		strings.TrimSpace(req.EventID),
+		strings.TrimSpace(req.WorkflowID),
+		strings.TrimSpace(req.RunID),
+		strings.TrimSpace(req.WorkflowType),
+		strings.TrimSpace(req.Title),
+		strings.TrimSpace(req.Summary),
+		customerImpactSummary,
+		strings.TrimSpace(customerImpactDetails),
+		pq.Array(customerImpactItems),
+		strings.TrimSpace(req.RootCause),
+		strings.TrimSpace(req.Remediation),
+		strings.TrimSpace(req.CurrentStatus),
+		strings.TrimSpace(req.OpenMRURL),
+		strings.TrimSpace(req.OpenMRLabel),
+		rawReport,
+		raisedAt,
+		workflowStartedAt,
+		failedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("store workflow rca report: %w", err)
+	}
+	return nil
+}
+
+func codefacRCAIngestHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if codefacIngestToken() == "" {
+		writeJSONError(w, "codefac rca ingest is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if !authorizeCodefacIngest(r) {
+		writeJSONError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	var req codefacRCAIngestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	normalizeReviewLinkFields(&req)
+	mergeRawRCAIntoRequest(&req)
+
+	var tenant *Tenant
+	var err error
+	switch {
+	case req.TenantID > 0:
+		tenant, err = tenantStore.GetByID(req.TenantID)
+	case firstNonEmpty(req.DomainName, req.Domain) != "":
+		tenant, err = lookupTenantByDomainIdentifier(firstNonEmpty(req.DomainName, req.Domain))
+	default:
+		writeJSONError(w, "tenant_id or domain/domain_name is required", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSONError(w, "tenant not found", http.StatusNotFound)
+			return
+		}
+		writeJSONError(w, fmt.Sprintf("resolve tenant: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if tenant == nil {
+		writeJSONError(w, "tenant not found", http.StatusNotFound)
+		return
+	}
+
+	req.WorkflowID = strings.TrimSpace(req.WorkflowID)
+	req.RunID = strings.TrimSpace(req.RunID)
+	if req.RunID == "" {
+		writeJSONError(w, "run_id is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := storeWorkflowRCAReport(r.Context(), tenant.ID, req); err != nil {
+		if strings.Contains(err.Error(), "unsupported timestamp") {
+			writeJSONError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"status":      "stored",
+		"tenant_id":   tenant.ID,
+		"workflow_id": req.WorkflowID,
+		"run_id":      req.RunID,
+	}, http.StatusAccepted)
 }
 
 // ============================================================
@@ -5014,7 +5835,7 @@ func rbacSetupAdminHandler(w http.ResponseWriter, r *http.Request) {
 	// Create admin with all permissions (including "admin" for the Clients page)
 	allPerms := []string{
 		"admin", "overview", "failures", "activity-errors", "p100-latency",
-		"ses", "notifications", "report-history", "peoples",
+		"ses", "pipeline-requests", "notifications", "report-history", "peoples",
 	}
 
 	// Get all tenants and create admin for each
@@ -5130,7 +5951,7 @@ func rbacUsersHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Get RBAC entries for this tenant
 	rows, err := db.Query(`
-		SELECT id, user_email, tenant_id, role, permissions, created_at, updated_at, last_activity
+		SELECT id, user_email, tenant_id, role, persona, permissions, created_at, updated_at, last_activity
 		FROM rbac WHERE tenant_id = $1 ORDER BY user_email`, tenantID)
 	if err != nil {
 		log.Printf("ERROR: list rbac: %v", err)
@@ -5142,10 +5963,11 @@ func rbacUsersHandler(w http.ResponseWriter, r *http.Request) {
 	rbacMap := make(map[string]RBACEntry)
 	for rows.Next() {
 		var e RBACEntry
-		if err := rows.Scan(&e.ID, &e.UserEmail, &e.TenantID, &e.Role, pq.Array(&e.Permissions), &e.CreatedAt, &e.UpdatedAt, &e.LastActivity); err != nil {
+		if err := rows.Scan(&e.ID, &e.UserEmail, &e.TenantID, &e.Role, &e.Persona, pq.Array(&e.Permissions), &e.CreatedAt, &e.UpdatedAt, &e.LastActivity); err != nil {
 			log.Printf("ERROR: scan rbac: %v", err)
 			continue
 		}
+		e.Persona = normalizeRBACPersona(e.Persona)
 		rbacMap[e.UserEmail] = e
 	}
 
@@ -5177,6 +5999,7 @@ func rbacUsersHandler(w http.ResponseWriter, r *http.Request) {
 			"user_email":    entry.UserEmail,
 			"tenant_id":     entry.TenantID,
 			"role":          entry.Role,
+			"persona":       normalizeRBACPersona(entry.Persona),
 			"permissions":   perms,
 			"signed_in":     false,
 			"last_activity": entry.LastActivity,
@@ -5197,6 +6020,7 @@ func rbacUsersHandler(w http.ResponseWriter, r *http.Request) {
 				"user_email":    email,
 				"tenant_id":     tenantID,
 				"role":          "user",
+				"persona":       "developer",
 				"permissions":   []string{},
 				"signed_in":     true,
 				"name":          s.Name,
@@ -5208,16 +6032,19 @@ func rbacUsersHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Also get current user's role
 	currentRole := "user"
+	currentPersona := "developer"
 	if entry, ok := rbacMap[currentEmail]; ok {
 		currentRole = entry.Role
+		currentPersona = normalizeRBACPersona(entry.Persona)
 	} else {
 		// Check if the sessions map has any admin for this tenant
 	}
 
 	writeJSON(w, map[string]interface{}{
-		"users":        result,
-		"current_user": currentEmail,
-		"current_role": currentRole,
+		"users":           result,
+		"current_user":    currentEmail,
+		"current_role":    currentRole,
+		"current_persona": currentPersona,
 	}, http.StatusOK)
 }
 
@@ -5235,7 +6062,7 @@ func rbacUserTenantsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		rows, err := db.Query(`
-			SELECT t.id, t.name, r.role, r.permissions, r.created_at, r.updated_at, r.last_activity
+			SELECT t.id, t.name, r.role, r.persona, r.permissions, r.created_at, r.updated_at, r.last_activity
 			FROM rbac r
 			JOIN tenants t ON t.id = r.tenant_id
 			WHERE r.user_email = $1
@@ -5251,6 +6078,7 @@ func rbacUserTenantsHandler(w http.ResponseWriter, r *http.Request) {
 			TenantID     int        `json:"tenant_id"`
 			TenantName   string     `json:"tenant_name"`
 			Role         string     `json:"role"`
+			Persona      string     `json:"persona"`
 			Permissions  []string   `json:"permissions"`
 			CreatedAt    time.Time  `json:"created_at"`
 			UpdatedAt    time.Time  `json:"updated_at"`
@@ -5260,10 +6088,11 @@ func rbacUserTenantsHandler(w http.ResponseWriter, r *http.Request) {
 		tenants := make([]UserTenant, 0)
 		for rows.Next() {
 			var ut UserTenant
-			if err := rows.Scan(&ut.TenantID, &ut.TenantName, &ut.Role, pq.Array(&ut.Permissions), &ut.CreatedAt, &ut.UpdatedAt, &ut.LastActivity); err != nil {
+			if err := rows.Scan(&ut.TenantID, &ut.TenantName, &ut.Role, &ut.Persona, pq.Array(&ut.Permissions), &ut.CreatedAt, &ut.UpdatedAt, &ut.LastActivity); err != nil {
 				log.Printf("ERROR: scan user tenant: %v", err)
 				continue
 			}
+			ut.Persona = normalizeRBACPersona(ut.Persona)
 			// Ensure users with role "admin" always have the "admin" permission.
 			if ut.Role == "admin" {
 				hasAdmin := false
@@ -5321,6 +6150,7 @@ func rbacUserTenantsHandler(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UserEmail   string   `json:"user_email"`
 			Role        string   `json:"role"`
+			Persona     string   `json:"persona"`
 			Permissions []string `json:"permissions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -5334,16 +6164,17 @@ func rbacUserTenantsHandler(w http.ResponseWriter, r *http.Request) {
 		if req.Role != "admin" && req.Role != "user" {
 			req.Role = "user"
 		}
+		req.Persona = normalizeRBACPersona(req.Persona)
 		if req.Permissions == nil {
 			req.Permissions = []string{}
 		}
 
 		_, err = db.Exec(`
-			INSERT INTO rbac (user_email, tenant_id, role, permissions, updated_at, last_activity)
-			VALUES ($1, $2, $3, $4, NOW(), NOW())
+			INSERT INTO rbac (user_email, tenant_id, role, persona, permissions, updated_at, last_activity)
+			VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
 			ON CONFLICT (user_email, tenant_id)
-			DO UPDATE SET role = $3, permissions = $4, updated_at = NOW(), last_activity = NOW()`,
-			req.UserEmail, tenantID, req.Role, pq.Array(req.Permissions))
+			DO UPDATE SET role = $3, persona = $4, permissions = $5, updated_at = NOW(), last_activity = NOW()`,
+			req.UserEmail, tenantID, req.Role, req.Persona, pq.Array(req.Permissions))
 		if err != nil {
 			log.Printf("ERROR: assign user to tenant: %v", err)
 			writeJSONError(w, fmt.Sprintf("assign: %v", err), http.StatusInternalServerError)
@@ -5443,16 +6274,17 @@ func rbacHandler(w http.ResponseWriter, r *http.Request) {
 
 		var entry RBACEntry
 		err = db.QueryRow(`
-			SELECT id, user_email, tenant_id, role, permissions, created_at, updated_at, last_activity
+			SELECT id, user_email, tenant_id, role, persona, permissions, created_at, updated_at, last_activity
 			FROM rbac WHERE user_email = $1 AND tenant_id = $2`,
 			currentEmail, tenantID).
-			Scan(&entry.ID, &entry.UserEmail, &entry.TenantID, &entry.Role, pq.Array(&entry.Permissions), &entry.CreatedAt, &entry.UpdatedAt, &entry.LastActivity)
+			Scan(&entry.ID, &entry.UserEmail, &entry.TenantID, &entry.Role, &entry.Persona, pq.Array(&entry.Permissions), &entry.CreatedAt, &entry.UpdatedAt, &entry.LastActivity)
 		if err == sql.ErrNoRows {
 			// Return default permissions for new users
 			writeJSON(w, map[string]interface{}{
 				"user_email":  currentEmail,
 				"tenant_id":   tenantID,
 				"role":        "user",
+				"persona":     "developer",
 				"permissions": []string{},
 			}, http.StatusOK)
 			return
@@ -5480,6 +6312,7 @@ func rbacHandler(w http.ResponseWriter, r *http.Request) {
 					pq.Array(entry.Permissions), entry.ID)
 			}
 		}
+		entry.Persona = normalizeRBACPersona(entry.Persona)
 
 		writeJSON(w, entry, http.StatusOK)
 
@@ -5522,6 +6355,7 @@ func rbacHandler(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UserEmail   string   `json:"user_email"`
 			Role        string   `json:"role"`
+			Persona     string   `json:"persona"`
 			Permissions []string `json:"permissions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -5535,24 +6369,26 @@ func rbacHandler(w http.ResponseWriter, r *http.Request) {
 		if req.Role != "admin" && req.Role != "user" {
 			req.Role = "user"
 		}
+		req.Persona = normalizeRBACPersona(req.Persona)
 		if req.Permissions == nil {
 			req.Permissions = []string{}
 		}
 
 		var entry RBACEntry
 		err = db.QueryRow(`
-			INSERT INTO rbac (user_email, tenant_id, role, permissions, updated_at)
-			VALUES ($1, $2, $3, $4, NOW())
+			INSERT INTO rbac (user_email, tenant_id, role, persona, permissions, updated_at)
+			VALUES ($1, $2, $3, $4, $5, NOW())
 			ON CONFLICT (user_email, tenant_id)
-			DO UPDATE SET role = $3, permissions = $4, updated_at = NOW()
-			RETURNING id, user_email, tenant_id, role, permissions, created_at, updated_at, last_activity`,
-			req.UserEmail, tenantID, req.Role, pq.Array(req.Permissions)).
-			Scan(&entry.ID, &entry.UserEmail, &entry.TenantID, &entry.Role, pq.Array(&entry.Permissions), &entry.CreatedAt, &entry.UpdatedAt, &entry.LastActivity)
+			DO UPDATE SET role = $3, persona = $4, permissions = $5, updated_at = NOW()
+			RETURNING id, user_email, tenant_id, role, persona, permissions, created_at, updated_at, last_activity`,
+			req.UserEmail, tenantID, req.Role, req.Persona, pq.Array(req.Permissions)).
+			Scan(&entry.ID, &entry.UserEmail, &entry.TenantID, &entry.Role, &entry.Persona, pq.Array(&entry.Permissions), &entry.CreatedAt, &entry.UpdatedAt, &entry.LastActivity)
 		if err != nil {
 			log.Printf("ERROR: upsert rbac: %v", err)
 			writeJSONError(w, fmt.Sprintf("save rbac: %v", err), http.StatusInternalServerError)
 			return
 		}
+		entry.Persona = normalizeRBACPersona(entry.Persona)
 		writeJSON(w, entry, http.StatusOK)
 
 	default:
@@ -8666,6 +9502,10 @@ func main() {
 		log.Fatalf("Failed to ensure pipeline_workflow_failures table: %v", err)
 	}
 	log.Printf("Pipeline workflow failures table ready")
+	if err := EnsureWorkflowRCATable(db); err != nil {
+		log.Fatalf("Failed to ensure workflow_rca_reports table: %v", err)
+	}
+	log.Printf("Workflow RCA reports table ready")
 
 	if _, err := db.Exec(`ALTER TABLE codefac_pipelines ADD COLUMN IF NOT EXISTS cooldown_seconds INTEGER NOT NULL DEFAULT 300`); err != nil {
 		log.Printf("WARN: could not add cooldown_seconds column to codefac_pipelines: %v", err)
@@ -8676,6 +9516,14 @@ func main() {
 		log.Fatalf("Failed to ensure rbac table: %v", err)
 	}
 	log.Printf("RBAC table ready")
+	if _, err := db.Exec(`
+		UPDATE rbac
+		SET permissions = array_append(permissions, 'pipeline-requests'),
+		    updated_at = NOW()
+		WHERE permissions @> ARRAY['notifications']::TEXT[]
+		  AND NOT permissions @> ARRAY['pipeline-requests']::TEXT[]`); err != nil {
+		log.Printf("WARN: could not backfill pipeline-requests permissions: %v", err)
+	}
 
 	// Initialize tenant store
 	tenantStore = &TenantStore{DB: db}
@@ -8741,6 +9589,7 @@ func main() {
 	// Register routes — auth endpoints are public; everything else requires a valid session
 	http.HandleFunc("/api/auth/verify", corsMiddleware(authVerifyHandler))
 	http.HandleFunc("/api/auth/me", corsMiddleware(authMeHandler))
+	http.HandleFunc("/api/codefac/rca", corsMiddleware(codefacRCAIngestHandler))
 	http.HandleFunc("/api/workflows", corsMiddleware(requireAuth(workflowsHandler)))
 	http.HandleFunc("/api/workflows/history", corsMiddleware(requireAuth(workflowHistoryHandler)))
 	http.HandleFunc("/api/tenants", corsMiddleware(requireAuth(tenantsHandler)))
@@ -8757,7 +9606,7 @@ func main() {
 	http.HandleFunc("/api/alerts/rules/test", corsMiddleware(requirePermission("notifications")(alertsRulesTestHandler)))
 	http.HandleFunc("/api/codefac-pipelines", corsMiddleware(requirePermission("notifications")(codefacPipelinesHandler)))
 	http.HandleFunc("/api/codefac-pipelines/trigger", corsMiddleware(requirePermission("notifications")(codefacPipelineTriggerHandler)))
-	http.HandleFunc("/api/pipeline-requests", corsMiddleware(requirePermission("notifications")(pipelineWorkflowFailuresHandler)))
+	http.HandleFunc("/api/pipeline-requests", corsMiddleware(requirePermission("pipeline-requests")(pipelineWorkflowFailuresHandler)))
 	http.HandleFunc("/api/notification-channels", corsMiddleware(requirePermission("notifications")(notificationChannelsHandler)))
 	http.HandleFunc("/api/reports", corsMiddleware(requirePermission("report-history")(reportsHandler)))
 	http.HandleFunc("/api/reports/trigger", corsMiddleware(requirePermission("report-history")(reportTriggerHandler)))

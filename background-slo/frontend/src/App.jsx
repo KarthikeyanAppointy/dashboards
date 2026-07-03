@@ -24,7 +24,7 @@ const ROUTE_PERM = {
   "/p100-latency": "p100-latency",
   "/ses": "ses",
   "/notifications": "notifications",
-  "/pipeline-requests": "notifications",
+  "/pipeline-requests": "pipeline-requests",
   "/report-history": "report-history",
   "/peoples": "peoples",
   "/admin/clients": "admin",
@@ -72,16 +72,15 @@ const PAGE_META = {
       "Configure notification channels, alert rules, and scheduled reports.",
   },
   "/pipeline-requests": {
-    eyebrow: "Pages / Notifications",
+    eyebrow: "Pages / Delivery",
     title: "Pipeline Requests",
     description:
       "Review pipeline trigger requests, delivery status, and requests skipped because the same workflow type and error were already handled.",
   },
   "/report-history": {
     eyebrow: "Pages / Reports",
-    title: "Report & Pipeline History",
-    description:
-      "History of triggered scheduled reports and pipeline executions.",
+    title: "Report History",
+    description: "History of triggered alerts and scheduled reports.",
   },
   "/peoples": {
     eyebrow: "Pages / Admin",
@@ -184,6 +183,8 @@ function AppContent() {
   const [alertModal, setAlertModal] = useState(null);
   const [activeAlerts, setActiveAlerts] = useState(new Set());
   const [userPermissions, setUserPermissions] = useState([]);
+  const [userPersona, setUserPersona] = useState("developer");
+  const [userRole, setUserRole] = useState("user");
   const [accessChecked, setAccessChecked] = useState(false);
   const [showWelcome, setShowWelcome] = useState(false);
 
@@ -242,9 +243,13 @@ function AppContent() {
       if (res.ok) {
         const json = await res.json();
         setUserPermissions(json.permissions || []);
+        setUserPersona(json.persona || "developer");
+        setUserRole(json.role || "user");
         setAccessChecked(true);
       }
     } catch {
+      setUserPersona("developer");
+      setUserRole("user");
       setAccessChecked(true);
     }
   }, [authFetch, selectedTenantId]);
@@ -884,6 +889,8 @@ function AppContent() {
                           (t) => t.id === selectedTenantId,
                         )}
                         notificationsEnabled={notificationsEnabled}
+                        userPersona={userPersona}
+                        userRole={userRole}
                       />
                     ) : (
                       <Navigate to="/" replace />
@@ -991,7 +998,11 @@ function AppContent() {
             canAccess("/pipeline-requests") &&
             !showWelcome && (
               <div className="app-content">
-                <PipelineErrorsPage selectedTenantId={selectedTenantId} />
+                <PipelineErrorsPage
+                  selectedTenantId={selectedTenantId}
+                  userPersona={userPersona}
+                  userRole={userRole}
+                />
               </div>
             )}
 
@@ -1010,6 +1021,7 @@ function AppContent() {
                 <PeoplesPage
                   selectedTenantId={selectedTenantId}
                   showSnackbar={showSnackbar}
+                  userPersona={userPersona}
                 />
               </div>
             )}

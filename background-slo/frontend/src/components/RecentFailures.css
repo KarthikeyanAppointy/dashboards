@@ -90,15 +90,19 @@
 }
 
 .failures-table th.col-failure-reason {
-    width: 24%;
-}
-
-.failures-table th.col-workflow-type {
     width: 20%;
 }
 
-.failures-table th.col-tasklist {
+.failures-table th.col-customer-impact {
+    width: 28%;
+}
+
+.failures-table th.col-workflow-type {
     width: 14%;
+}
+
+.failures-table th.col-tasklist {
+    width: 12%;
 }
 
 .failures-table th.col-status {
@@ -211,14 +215,82 @@
     font-size: 12px;
 }
 
+.cell-impact {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+}
+
+.cell-impact-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    align-items: flex-start;
+}
+
+.cell-impact-pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 20px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: var(--surface-secondary);
+    color: var(--fg-secondary);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.cell-impact-pill.has-impact {
+    background: color-mix(in srgb, var(--warning-bg) 72%, var(--surface));
+    color: var(--warning-fg);
+}
+
+.cell-impact-preview {
+    margin: 0;
+    color: var(--fg-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: normal;
+    word-break: break-word;
+}
+
+.cell-impact-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.cell-impact-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 24px;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--fg);
+    font-size: 11.5px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    text-decoration: none;
+}
+
+.cell-impact-action:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
 .cell-type {
     white-space: normal !important;
-    overflow-wrap: break-word !important;
+    overflow-wrap: anywhere !important;
     word-break: break-word !important;
     text-overflow: clip !important;
     line-height: 1.4;
-    max-height: 3.6em;
-    overflow: hidden;
+    overflow: visible;
 }
 
 .cell-tasklist code {
