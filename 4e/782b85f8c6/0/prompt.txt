@@ -87,3 +87,7 @@ something is wrong here why it is not picking up properly, cadence is running at
 how about we store emails we found in the workflow when we get the workflow history we separate out emails so that searching would be easier, because on the UI it is so much time to render the page and i am unable to understand whether UI updated or not, add a separate view column to see "Emails involved" only when type is "Email Workflows"
 
 also now its not about recipient emails i guess, as we are using the regex on emails, so we might get from workflows history fetch after.
+
+---
+
+make commit for this changes and write proper commit log (such that even product team can understand what have changed)
