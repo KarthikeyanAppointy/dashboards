@@ -1,0 +1,79 @@
+can you fix the first thing: which is the start up logic of makefile:
+
+
+
+add this separate:
+
+make infra, make infra-stop
+
+make dashboard-frontent-start, make dashboard-backend-start (also stop)
+
+
+
+i used to start frontend with:&#x20;
+
+
+
+VITE\_GOOGLE\_CLIENT\_ID="REDACTED.apps.googleusercontent.com" \
+VITE\_APPONTY\_ONLY\_LOGIN="true" \
+npm run dev
+
+
+
+i used to start backend with:
+
+DATABASE\_URL="postgres\://postgres:postgres\@localhost:5434/slo\_dashboard?sslmode=disable" \
+PORT="8081" \
+GOOGLE\_CLIENT\_ID="REDACTED.apps.googleusercontent.com" \
+APPONTY\_ONLY\_LOGIN="false" \
+ADMIN\_KEY="local-admin-key" \
+CODEFAC\_RCA\_INGEST\_TOKEN="verysecurepassword" \
+go run main.go
+
+
+
+#### -Extra
+
+DEFAULT\_TENANT\_NAME="local-dev" \
+DEFAULT\_DOMAIN\_ID="508e3ea6-3166-445c-b748-1434029cd205" \
+DEFAULT\_DOMAIN\_NAME="qa-admin" \
+DEFAULT\_ES="[http://localhost:9000](http://localhost:9000)" \
+DEFAULT\_INDEX="cadence-visibility" \
+DEFAULT\_CADENCE\_WEB\_URL="[http://localhost:8234](http://localhost:8234)" \
+AWS\_REGION="us-east-1" \
+SES\_REGIONS="us-east-1" \
+SES\_DOMAIN\_NAME="ses" \
+
+
+create env's in corresponding files in the folders, and use those envs reference and write the make commands&#x20;
+
+
+
+keep postgres at port 5437 edit the references!
+
+---
+
+make the makefile standard, check makefile guidelines on how to write, lets write properly
+why did you add env.example in the dashboards add it too.
+
+what is this .run folder, and we wont be storing any log files, i will be running in iterm2 directly&#x20;
+
+---
+
+another issue is, local build runs and create a new build and store it in local,&#x20;
+i want also add build direct make commands, just like we do pnpm build&#x20;
+add for both frontend and backend after infra logic with makefile
+
+---
+
+what is this "dashboard-frontend-start dashboard-frontent-start:" make this correct&#x20;
+keep all the logic at one place, make things easy and simplar&#x20;
+and we also need to simplify the cd commands because we can run build and run start back to back command after command
+
+---
+
+how can we make dont get confused between different build commands fix it, it should know what to do!
+
+---
+
+how can we make agent dont get confused between different build commands fix it, it should know what to do!
