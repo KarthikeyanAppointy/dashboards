@@ -191,7 +191,7 @@ function AppContent() {
   const [alertModal, setAlertModal] = useState(null);
   const [activeAlerts, setActiveAlerts] = useState(new Set());
   const [userPermissions, setUserPermissions] = useState([]);
-  const [userPersona, setUserPersona] = useState("developer");
+  const [userPersona, setUserPersona] = useState("Developer");
   const [userRole, setUserRole] = useState("user");
   const [accessChecked, setAccessChecked] = useState(false);
   const [showWelcome, setShowWelcome] = useState(false);
@@ -251,12 +251,12 @@ function AppContent() {
       if (res.ok) {
         const json = await res.json();
         setUserPermissions(json.permissions || []);
-        setUserPersona(json.persona || "developer");
+        setUserPersona(json.persona || "Developer");
         setUserRole(json.role || "user");
         setAccessChecked(true);
       }
     } catch {
-      setUserPersona("developer");
+      setUserPersona("Developer");
       setUserRole("user");
       setAccessChecked(true);
     }
@@ -1133,6 +1133,9 @@ function AppContent() {
           {showWelcome && (
             <div className="app-content" style={{ padding: 0 }}>
               <WelcomePage
+                missingSections={Boolean(
+                  selectedTenantId && userPermissions.length === 0,
+                )}
                 onAccessGranted={() => {
                   setShowWelcome(false);
                   fetchPermissions();

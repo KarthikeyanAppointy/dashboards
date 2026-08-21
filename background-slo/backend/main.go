@@ -808,11 +808,11 @@ func trimTextPreview(value string, max int) string {
 func normalizeRBACPersona(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "qa":
-		return "qa"
+		return "QA"
 	case "ceam":
-		return "ceam"
+		return "CEAM"
 	default:
-		return "developer"
+		return "Developer"
 	}
 }
 
@@ -1785,7 +1785,7 @@ func EnsureRBACTable(db *sql.DB) error {
 	if _, err := db.Exec(`ALTER TABLE rbac ADD COLUMN IF NOT EXISTS last_activity TIMESTAMPTZ`); err != nil {
 		log.Printf("WARN: could not add last_activity column: %v", err)
 	}
-	if _, err := db.Exec(`ALTER TABLE rbac ADD COLUMN IF NOT EXISTS persona TEXT NOT NULL DEFAULT 'developer'`); err != nil {
+	if _, err := db.Exec(`ALTER TABLE rbac ADD COLUMN IF NOT EXISTS persona TEXT NOT NULL DEFAULT 'Developer'`); err != nil {
 		log.Printf("WARN: could not add persona column: %v", err)
 	}
 	return nil
@@ -6311,11 +6311,6 @@ func rbacSetupAdminHandler(w http.ResponseWriter, r *http.Request) {
 
 // rbacUsersHandler lists all users who have signed in (via the sessions map) and their RBAC entries.
 func rbacUsersHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	tenantIDStr := r.URL.Query().Get("tenant_id")
 	if tenantIDStr == "" {
 		writeJSONError(w, "missing tenant_id", http.StatusBadRequest)
@@ -6334,116 +6329,158 @@ func rbacUsersHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build a map of signed-in users (from sessions), skipping expired sessions
-	now := time.Now()
-	userSet := make(map[string]session)
-	sessions.Range(func(k, v any) bool {
-		s := v.(session)
-		if now.After(s.Expiry) {
-			sessions.Delete(k)
+	switch r.Method {
+	case http.MethodGet:
+		now := time.Now()
+		userSet := make(map[string]session)
+		sessions.Range(func(k, v any) bool {
+			s := v.(session)
+			if now.After(s.Expiry) {
+				sessions.Delete(k)
+				return true
+			}
+			userSet[s.Email] = s
 			return true
-		}
-		userSet[s.Email] = s
-		return true
-	})
+		})
 
-	// Get RBAC entries for this tenant
-	rows, err := db.Query(`
+		rows, err := db.Query(`
 		SELECT id, user_email, tenant_id, role, persona, permissions, created_at, updated_at, last_activity
 		FROM rbac WHERE tenant_id = $1 ORDER BY user_email`, tenantID)
-	if err != nil {
-		log.Printf("ERROR: list rbac: %v", err)
-		writeJSONError(w, fmt.Sprintf("list: %v", err), http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	rbacMap := make(map[string]RBACEntry)
-	for rows.Next() {
-		var e RBACEntry
-		if err := rows.Scan(&e.ID, &e.UserEmail, &e.TenantID, &e.Role, &e.Persona, pq.Array(&e.Permissions), &e.CreatedAt, &e.UpdatedAt, &e.LastActivity); err != nil {
-			log.Printf("ERROR: scan rbac: %v", err)
-			continue
+		if err != nil {
+			log.Printf("ERROR: list rbac: %v", err)
+			writeJSONError(w, fmt.Sprintf("list: %v", err), http.StatusInternalServerError)
+			return
 		}
-		e.Persona = normalizeRBACPersona(e.Persona)
-		rbacMap[e.UserEmail] = e
-	}
+		defer rows.Close()
 
-	// Merge: all session users + any RBAC entries for users not currently signed in
-	result := make([]map[string]interface{}, 0)
-	seen := make(map[string]bool)
+		rbacMap := make(map[string]RBACEntry)
+		for rows.Next() {
+			var e RBACEntry
+			if err := rows.Scan(&e.ID, &e.UserEmail, &e.TenantID, &e.Role, &e.Persona, pq.Array(&e.Permissions), &e.CreatedAt, &e.UpdatedAt, &e.LastActivity); err != nil {
+				log.Printf("ERROR: scan rbac: %v", err)
+				continue
+			}
+			e.Persona = normalizeRBACPersona(e.Persona)
+			rbacMap[e.UserEmail] = e
+		}
 
-	// Add all RBAC entries first
-	for _, entry := range rbacMap {
-		seen[entry.UserEmail] = true
+		result := make([]map[string]interface{}, 0)
+		seen := make(map[string]bool)
+		for _, entry := range rbacMap {
+			seen[entry.UserEmail] = true
 
-		// Ensure users with role "admin" always have the "admin" permission.
-		perms := entry.Permissions
-		if entry.Role == "admin" {
-			hasAdmin := false
-			for _, p := range perms {
-				if p == "admin" {
-					hasAdmin = true
-					break
+			perms := entry.Permissions
+			if entry.Role == "admin" {
+				hasAdmin := false
+				for _, p := range perms {
+					if p == "admin" {
+						hasAdmin = true
+						break
+					}
+				}
+				if !hasAdmin {
+					perms = append(perms, "admin")
 				}
 			}
-			if !hasAdmin {
-				perms = append(perms, "admin")
+
+			item := map[string]interface{}{
+				"id":            entry.ID,
+				"user_email":    entry.UserEmail,
+				"tenant_id":     entry.TenantID,
+				"role":          entry.Role,
+				"persona":       normalizeRBACPersona(entry.Persona),
+				"permissions":   perms,
+				"signed_in":     false,
+				"last_activity": entry.LastActivity,
+			}
+			if s, ok := userSet[entry.UserEmail]; ok {
+				item["name"] = s.Name
+				item["picture"] = s.Picture
+				item["signed_in"] = true
+			}
+			result = append(result, item)
+		}
+
+		for email, s := range userSet {
+			if !seen[email] {
+				result = append(result, map[string]interface{}{
+					"id":            0,
+					"user_email":    email,
+					"tenant_id":     tenantID,
+					"role":          "user",
+					"persona":       "Developer",
+					"permissions":   []string{},
+					"signed_in":     true,
+					"name":          s.Name,
+					"picture":       s.Picture,
+					"last_activity": nil,
+				})
 			}
 		}
 
-		item := map[string]interface{}{
-			"id":            entry.ID,
-			"user_email":    entry.UserEmail,
-			"tenant_id":     entry.TenantID,
-			"role":          entry.Role,
-			"persona":       normalizeRBACPersona(entry.Persona),
-			"permissions":   perms,
-			"signed_in":     false,
-			"last_activity": entry.LastActivity,
+		currentRole := "user"
+		currentPersona := "Developer"
+		if entry, ok := rbacMap[currentEmail]; ok {
+			currentRole = entry.Role
+			currentPersona = normalizeRBACPersona(entry.Persona)
 		}
-		if s, ok := userSet[entry.UserEmail]; ok {
-			item["name"] = s.Name
-			item["picture"] = s.Picture
-			item["signed_in"] = true
+
+		writeJSON(w, map[string]interface{}{
+			"users":           result,
+			"current_user":    currentEmail,
+			"current_role":    currentRole,
+			"current_persona": currentPersona,
+		}, http.StatusOK)
+	case http.MethodDelete:
+		var currentRole string
+		err = db.QueryRow(
+			`SELECT role FROM rbac WHERE user_email = $1 AND tenant_id = $2`,
+			currentEmail, tenantID,
+		).Scan(&currentRole)
+		if err == sql.ErrNoRows || currentRole != "admin" {
+			writeJSONError(w, "only admins can remove people", http.StatusForbidden)
+			return
 		}
-		result = append(result, item)
-	}
-
-	// Add session users without RBAC entries
-	for email, s := range userSet {
-		if !seen[email] {
-			result = append(result, map[string]interface{}{
-				"id":            0,
-				"user_email":    email,
-				"tenant_id":     tenantID,
-				"role":          "user",
-				"persona":       "developer",
-				"permissions":   []string{},
-				"signed_in":     true,
-				"name":          s.Name,
-				"picture":       s.Picture,
-				"last_activity": nil,
-			})
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("check role: %v", err), http.StatusInternalServerError)
+			return
 		}
-	}
 
-	// Also get current user's role
-	currentRole := "user"
-	currentPersona := "developer"
-	if entry, ok := rbacMap[currentEmail]; ok {
-		currentRole = entry.Role
-		currentPersona = normalizeRBACPersona(entry.Persona)
-	} else {
-		// Check if the sessions map has any admin for this tenant
-	}
+		userEmail := strings.TrimSpace(r.URL.Query().Get("user_email"))
+		if userEmail == "" {
+			writeJSONError(w, "missing user_email", http.StatusBadRequest)
+			return
+		}
+		if userEmail == currentEmail {
+			writeJSONError(w, "cannot remove yourself", http.StatusBadRequest)
+			return
+		}
 
-	writeJSON(w, map[string]interface{}{
-		"users":           result,
-		"current_user":    currentEmail,
-		"current_role":    currentRole,
-		"current_persona": currentPersona,
-	}, http.StatusOK)
+		res, err := db.Exec(`DELETE FROM rbac WHERE user_email = $1`, userEmail)
+		if err != nil {
+			log.Printf("ERROR: remove user everywhere: %v", err)
+			writeJSONError(w, fmt.Sprintf("remove: %v", err), http.StatusInternalServerError)
+			return
+		}
+		rowsAffected, _ := res.RowsAffected()
+		if rowsAffected == 0 {
+			writeJSONError(w, "user has no saved access to remove", http.StatusNotFound)
+			return
+		}
+
+		sessions.Range(func(k, v any) bool {
+			s := v.(session)
+			if s.Email == userEmail {
+				sessions.Delete(k)
+			}
+			return true
+		})
+
+		log.Printf("USER RESET: %q removed from all tenants by %q", userEmail, currentEmail)
+		writeJSON(w, map[string]string{"status": "removed"}, http.StatusOK)
+	default:
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // rbacUserTenantsHandler handles GET, POST, and DELETE on /api/rbac/user-tenants.
@@ -6682,7 +6719,7 @@ func rbacHandler(w http.ResponseWriter, r *http.Request) {
 				"user_email":  currentEmail,
 				"tenant_id":   tenantID,
 				"role":        "user",
-				"persona":     "developer",
+				"persona":     "Developer",
 				"permissions": []string{},
 			}, http.StatusOK)
 			return
@@ -9766,7 +9803,7 @@ func getGCPAccessTokenFromServiceAccount() (string, error) {
 
 func main() {
 	// Database connection
-	databaseURL := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/slo_dashboard?sslmode=disable")
+	databaseURL := getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5437/slo_dashboard?sslmode=disable")
 	var err error
 	db, err = sql.Open("postgres", databaseURL)
 	if err != nil {

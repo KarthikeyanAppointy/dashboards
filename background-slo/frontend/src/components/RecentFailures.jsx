@@ -21,29 +21,7 @@ const RECENT_FAILURE_COLUMN_OPTIONS = [
   { key: "lastPipeline", label: "Last Pipeline" },
 ];
 
-function usesCustomerPreset(persona, role) {
-  const normalizedPersona = String(persona || "").toLowerCase();
-  if (normalizedPersona === "qa" || normalizedPersona === "ceam") {
-    return true;
-  }
-  const normalizedRole = String(role || "").toLowerCase();
-  if (normalizedRole === "admin" || normalizedRole === "user") {
-    return false;
-  }
-  return normalizedPersona !== "developer" && normalizedPersona !== "";
-}
-
-function defaultRecentFailureColumns(persona, role, canShowPipelineColumns) {
-  if (usesCustomerPreset(persona, role)) {
-    return [
-      "failureReason",
-      "customerImpact",
-      "workflowType",
-      "status",
-      "closeTime",
-    ];
-  }
-
+function defaultRecentFailureColumns(canShowPipelineColumns) {
   const columns = [
     "workflowRun",
     "failureReason",
@@ -330,10 +308,11 @@ function RecentFailures({
   selectedTenantId,
   selectedTenant,
   notificationsEnabled,
-  userPersona,
-  userRole,
 }) {
-  const { authFetch } = useAuth();
+  const { authFetch, user } = useAuth();
+  const impactStorageKey = user?.email
+    ? `${IMPACT_FILTER_STORAGE_KEY}:${user.email}`
+    : IMPACT_FILTER_STORAGE_KEY;
   const [historyWorkflow, setHistoryWorkflow] = useState(null);
   const [rcaWorkflow, setRcaWorkflow] = useState(null);
   const pageSize = limit || 20;
@@ -353,13 +332,13 @@ function RecentFailures({
   const [triggeredMap, setTriggeredMap] = useState({});
   const [impactOnly, setImpactOnly] = useState(() => {
     if (typeof window === "undefined") return false;
-    return window.localStorage.getItem(IMPACT_FILTER_STORAGE_KEY) === "true";
+    return false;
   });
   const canShowPipelineColumns =
     codefacPipelines && codefacPipelines.length > 0 && notificationsEnabled;
   const [visibleColumns, setVisibleColumns] = useState(() => {
     if (typeof window === "undefined") {
-      return defaultRecentFailureColumns("developer", "user", false);
+      return defaultRecentFailureColumns(false);
     }
     try {
       const saved = JSON.parse(
@@ -367,42 +346,29 @@ function RecentFailures({
       );
       return Array.isArray(saved)
         ? saved
-        : defaultRecentFailureColumns("developer", "user", false);
+        : defaultRecentFailureColumns(false);
     } catch {
-      return defaultRecentFailureColumns("developer", "user", false);
+      return defaultRecentFailureColumns(false);
     }
   });
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const requiresImpactDefault = usesCustomerPreset(userPersona, userRole);
-    const saved = window.localStorage.getItem(IMPACT_FILTER_STORAGE_KEY);
-    if (requiresImpactDefault && saved !== "true") {
-      setImpactOnly(true);
-      window.localStorage.setItem(IMPACT_FILTER_STORAGE_KEY, "true");
-      return;
-    }
-    if (!requiresImpactDefault && saved !== null) {
-      setImpactOnly(saved === "true");
-    }
-  }, [userPersona, userRole]);
+    const saved = window.localStorage.getItem(impactStorageKey);
+    setImpactOnly(saved === "true");
+  }, [impactStorageKey]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(
-        IMPACT_FILTER_STORAGE_KEY,
-        String(impactOnly),
-      );
+      window.localStorage.setItem(impactStorageKey, String(impactOnly));
     }
-  }, [impactOnly]);
+  }, [impactOnly, impactStorageKey]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const saved = window.localStorage.getItem(COLUMN_STORAGE_KEY);
     if (!saved) {
       const defaults = defaultRecentFailureColumns(
-        userPersona || "developer",
-        userRole || "user",
         Boolean(canShowPipelineColumns),
       );
       setVisibleColumns(defaults);
@@ -427,22 +393,18 @@ function RecentFailures({
         sanitized.length > 0
           ? sanitized
           : defaultRecentFailureColumns(
-              userPersona || "developer",
-              userRole || "user",
               Boolean(canShowPipelineColumns),
             );
       setVisibleColumns(nextVisible);
       window.localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(nextVisible));
     } catch {
       const defaults = defaultRecentFailureColumns(
-        userPersona || "developer",
-        userRole || "user",
         Boolean(canShowPipelineColumns),
       );
       setVisibleColumns(defaults);
       window.localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(defaults));
     }
-  }, [canShowPipelineColumns, userPersona, userRole]);
+  }, [canShowPipelineColumns]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -479,13 +441,7 @@ function RecentFailures({
   };
 
   const resetColumns = () => {
-    setVisibleColumns(
-      defaultRecentFailureColumns(
-        userPersona || "developer",
-        userRole || "user",
-        Boolean(canShowPipelineColumns),
-      ),
-    );
+    setVisibleColumns(defaultRecentFailureColumns(Boolean(canShowPipelineColumns)));
   };
 
   const filteredFailures = (failures || []).filter((f) => {
