@@ -1,0 +1,26 @@
+{
+  "cli_version": "0.9.0",
+  "checkpoint_id": "6b53a26ceb14",
+  "strategy": "manual-commit",
+  "branch": "codex/access-controls-and-rca-filters",
+  "checkpoints_count": 5,
+  "files_touched": [
+    "background-slo/backend/main.go"
+  ],
+  "sessions": [
+    {
+      "metadata": "/6b/53a26ceb14/0/metadata.json",
+      "transcript": "/6b/53a26ceb14/0/full.jsonl",
+      "compact_transcript": "/6b/53a26ceb14/0/transcript.jsonl",
+      "content_hash": "/6b/53a26ceb14/0/content_hash.txt",
+      "prompt": "/6b/53a26ceb14/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 137634,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 1015168,
+    "output_tokens": 14606,
+    "api_call_count": 27
+  }
+}
