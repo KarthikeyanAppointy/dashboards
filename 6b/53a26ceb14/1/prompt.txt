@@ -1,0 +1,25 @@
+start the infra, backend, frontend for me from makefile!
+
+---
+
+now i want you fix things:
+
+
+
+1. add a way to delete/remove people with complete access, so that we can reset the people account sometimes.
+2. persona should be nothing but label (nothing related to role).
+3. when we set role for a specific person set all section access (except clients(admin), notifications, reports, people), let the admin deselect/select if wanted.
+4. if user got assigned to a client and admin didnt set any section for him (show a message to get sections permission)
+5. when assigning client access for person, you set all section access (except clients(admin), notifications, reports, people), let the admin deselect/select if wanted.
+6. earlier we have set default “**RCA Customer impact only”** when page reloads, i want you remove that default, [http://localhost:5173/recent-failures](http://localhost:5173/recent-failures), [http://localhost:5173/pipeline-requests](http://localhost:5173/pipeline-requests)
+
+---
+
+restart both backend and frontend then
+
+---
+
+labels can be any one of these "Developer" "QA" "CEAM" admin sets&#x20;
+"Developer" will be mostly Admin, rest will be user.
+
+another thing by default after login also remove customer impact only (for the first time), let client set the filter themself, if selected store in state for page reloads persistion&#x20;
