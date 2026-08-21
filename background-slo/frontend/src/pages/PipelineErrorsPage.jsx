@@ -42,30 +42,7 @@ const PIPELINE_COLUMN_OPTIONS = [
   { key: "requestType", label: "Request Type" },
 ];
 
-function usesCustomerPreset(persona, role) {
-  const normalizedPersona = String(persona || "").toLowerCase();
-  if (normalizedPersona === "qa" || normalizedPersona === "ceam") {
-    return true;
-  }
-  const normalizedRole = String(role || "").toLowerCase();
-  if (normalizedRole === "admin" || normalizedRole === "user") {
-    return false;
-  }
-  return normalizedPersona !== "developer" && normalizedPersona !== "";
-}
-
-function defaultPipelineColumns(persona, role) {
-  if (usesCustomerPreset(persona, role)) {
-    return [
-      "timestamp",
-      "pipeline",
-      "status",
-      "workflowType",
-      "error",
-      "customerImpact",
-    ];
-  }
-
+function defaultPipelineColumns() {
   return PIPELINE_COLUMN_OPTIONS.map((option) => option.key);
 }
 
@@ -138,8 +115,11 @@ function statusTone(status) {
   }
 }
 
-function PipelineErrorsPage({ selectedTenantId, userPersona, userRole }) {
-  const { authFetch } = useAuth();
+function PipelineErrorsPage({ selectedTenantId }) {
+  const { authFetch, user } = useAuth();
+  const impactStorageKey = user?.email
+    ? `${PIPELINE_IMPACT_STORAGE_KEY}:${user.email}`
+    : PIPELINE_IMPACT_STORAGE_KEY;
   const [requestSource, setRequestSource] = useState(() => {
     if (typeof window === "undefined") return "es";
     const saved = window.localStorage.getItem(PIPELINE_REQUESTS_TAB_STORAGE_KEY);
@@ -153,21 +133,19 @@ function PipelineErrorsPage({ selectedTenantId, userPersona, userRole }) {
   const [search, setSearch] = useState("");
   const [impactOnly, setImpactOnly] = useState(() => {
     if (typeof window === "undefined") return false;
-    return window.localStorage.getItem(PIPELINE_IMPACT_STORAGE_KEY) === "true";
+    return false;
   });
   const [visibleColumns, setVisibleColumns] = useState(() => {
     if (typeof window === "undefined") {
-      return defaultPipelineColumns("developer", "user");
+      return defaultPipelineColumns();
     }
     try {
       const saved = JSON.parse(
         window.localStorage.getItem(PIPELINE_COLUMNS_STORAGE_KEY) || "null",
       );
-      return Array.isArray(saved)
-        ? saved
-        : defaultPipelineColumns("developer", "user");
+      return Array.isArray(saved) ? saved : defaultPipelineColumns();
     } catch {
-      return defaultPipelineColumns("developer", "user");
+      return defaultPipelineColumns();
     }
   });
   const [selectedRca, setSelectedRca] = useState(null);
@@ -240,35 +218,21 @@ function PipelineErrorsPage({ selectedTenantId, userPersona, userRole }) {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const requiresImpactDefault = usesCustomerPreset(userPersona, userRole);
-    const saved = window.localStorage.getItem(PIPELINE_IMPACT_STORAGE_KEY);
-    if (requiresImpactDefault && saved !== "true") {
-      setImpactOnly(true);
-      window.localStorage.setItem(PIPELINE_IMPACT_STORAGE_KEY, "true");
-      return;
-    }
-    if (!requiresImpactDefault && saved !== null) {
-      setImpactOnly(saved === "true");
-    }
-  }, [userPersona]);
+    const saved = window.localStorage.getItem(impactStorageKey);
+    setImpactOnly(saved === "true");
+  }, [impactStorageKey]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(
-        PIPELINE_IMPACT_STORAGE_KEY,
-        String(impactOnly),
-      );
+      window.localStorage.setItem(impactStorageKey, String(impactOnly));
     }
-  }, [impactOnly]);
+  }, [impactOnly, impactStorageKey]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const saved = window.localStorage.getItem(PIPELINE_COLUMNS_STORAGE_KEY);
     if (!saved) {
-      const defaults = defaultPipelineColumns(
-        userPersona || "developer",
-        userRole || "user",
-      );
+      const defaults = defaultPipelineColumns();
       setVisibleColumns(defaults);
       window.localStorage.setItem(
         PIPELINE_COLUMNS_STORAGE_KEY,
@@ -283,29 +247,21 @@ function PipelineErrorsPage({ selectedTenantId, userPersona, userRole }) {
       const allowed = new Set(PIPELINE_COLUMN_OPTIONS.map((option) => option.key));
       const sanitized = parsed.filter((key) => allowed.has(key));
       const nextVisible =
-        sanitized.length > 0
-          ? sanitized
-          : defaultPipelineColumns(
-              userPersona || "developer",
-              userRole || "user",
-            );
+        sanitized.length > 0 ? sanitized : defaultPipelineColumns();
       setVisibleColumns(nextVisible);
       window.localStorage.setItem(
         PIPELINE_COLUMNS_STORAGE_KEY,
         JSON.stringify(nextVisible),
       );
     } catch {
-      const defaults = defaultPipelineColumns(
-        userPersona || "developer",
-        userRole || "user",
-      );
+      const defaults = defaultPipelineColumns();
       setVisibleColumns(defaults);
       window.localStorage.setItem(
         PIPELINE_COLUMNS_STORAGE_KEY,
         JSON.stringify(defaults),
       );
     }
-  }, [userPersona, userRole]);
+  }, []);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -331,9 +287,7 @@ function PipelineErrorsPage({ selectedTenantId, userPersona, userRole }) {
   };
 
   const resetColumns = () => {
-    setVisibleColumns(
-      defaultPipelineColumns(userPersona || "developer", userRole || "user"),
-    );
+    setVisibleColumns(defaultPipelineColumns());
   };
 
   const activeRows = requestSource === "manual" ? manualRequests : esFailures;

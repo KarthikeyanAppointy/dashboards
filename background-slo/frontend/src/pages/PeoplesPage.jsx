@@ -2,6 +2,17 @@ import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../auth/AuthContext";
 import "./PeoplesPage.css";
 
+const DEFAULT_SECTION_PERMISSIONS = [
+  "overview",
+  "failures",
+  "activity-errors",
+  "p100-latency",
+  "ses",
+  "pipeline-requests",
+];
+
+const PERSONA_OPTIONS = ["Developer", "QA", "CEAM"];
+
 function formatLastActive(dateStr) {
   if (!dateStr) return null;
   const date = new Date(dateStr);
@@ -28,12 +39,6 @@ const SIDEBAR_SECTIONS = [
   { key: "notifications", label: "Notifications" },
   { key: "report-history", label: "Reports" },
   { key: "peoples", label: "People" },
-];
-
-const PERSONA_OPTIONS = [
-  { key: "developer", label: "Developer" },
-  { key: "qa", label: "QA" },
-  { key: "ceam", label: "CEAM" },
 ];
 
 function samePermissions(left = [], right = []) {
@@ -74,9 +79,11 @@ function DetailPanel({
   assigning,
   onRoleChange,
   onPersonaChange,
+  onPersonaSave,
   onAssign,
   onPermissionsSave,
   onRemoveTenant,
+  onRemovePerson,
 }) {
   const [showAssign, setShowAssign] = useState(false);
   const [assignTenantId, setAssignTenantId] = useState("");
@@ -89,7 +96,7 @@ function DetailPanel({
   useEffect(() => {
     setShowAssign(false);
     setAssignTenantId("");
-    setPermissions([]);
+    setPermissions(DEFAULT_SECTION_PERMISSIONS);
     setSelectedPermissions(user.permissions || []);
   }, [user.permissions, user.user_email]);
 
@@ -110,7 +117,7 @@ function DetailPanel({
     await onAssign(user.user_email, Number(assignTenantId), permissions);
     setShowAssign(false);
     setAssignTenantId("");
-    setPermissions([]);
+    setPermissions(DEFAULT_SECTION_PERMISSIONS);
   };
 
   const hasPermissionChanges = !samePermissions(
@@ -183,29 +190,33 @@ function DetailPanel({
       </div>
 
       <div className="pp-detail-section">
-        <span className="pp-detail-section-label">Persona</span>
+        <span className="pp-detail-section-label">Persona label</span>
         {isAdmin ? (
-          <div className="pp-role-toggle">
-            {PERSONA_OPTIONS.map((option) => (
-              <button
-                key={option.key}
-                className={`pp-role-btn${(user.persona || "developer") === option.key ? " active" : ""}`}
-                onClick={() =>
-                  (user.persona || "developer") !== option.key &&
-                  onPersonaChange(user.user_email, option.key)
-                }
-                disabled={saving}
-              >
-                {option.label}
-              </button>
-            ))}
+          <div className="pp-persona-row">
+            <select
+              className="pp-persona-input"
+              value={user.persona || "Developer"}
+              onChange={(event) =>
+                onPersonaChange(user.user_email, event.target.value)
+              }
+              disabled={saving}
+            >
+              {PERSONA_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+            <button
+              className="pp-assign-submit"
+              onClick={() => onPersonaSave(user.user_email)}
+              disabled={saving}
+            >
+              {saving ? "Saving…" : "Save label"}
+            </button>
           </div>
         ) : (
-          <span className="pp-role-badge">
-            {PERSONA_OPTIONS.find(
-              (option) => option.key === (user.persona || "developer"),
-            )?.label || "Developer"}
-          </span>
+          <span className="pp-role-badge">{user.persona || "Developer"}</span>
         )}
       </div>
 
@@ -252,7 +263,15 @@ function DetailPanel({
             ))}
           </div>
         ) : (
-          <p className="pp-no-access">No section access assigned yet.</p>
+          <div className="pp-no-access-stack">
+            <p className="pp-no-access">No section access assigned yet.</p>
+            {(userTenants || []).length > 0 && (
+              <p className="pp-access-warning">
+                This person has client access, but no sections yet. Grant
+                section permissions to let them use the dashboard.
+              </p>
+            )}
+          </div>
         )}
       </div>
 
@@ -350,7 +369,7 @@ function DetailPanel({
                   onClick={() => {
                     setShowAssign(false);
                     setAssignTenantId("");
-                    setPermissions([]);
+                    setPermissions(DEFAULT_SECTION_PERMISSIONS);
                   }}
                   disabled={assigning}
                 >
@@ -382,7 +401,7 @@ function DetailPanel({
                 value={assignTenantId}
                 onChange={(e) => {
                   setAssignTenantId(e.target.value);
-                  setPermissions([]);
+                  setPermissions(DEFAULT_SECTION_PERMISSIONS);
                 }}
                 disabled={assigning}
               >
@@ -422,6 +441,25 @@ function DetailPanel({
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {isAdmin && !isCurrentUser && (
+        <div className="pp-detail-section">
+          <div className="pp-detail-section-header">
+            <span className="pp-detail-section-label">Reset access</span>
+          </div>
+          <p className="pp-access-warning">
+            Remove this person from all clients and clear their saved session so
+            the account can be set up again.
+          </p>
+          <button
+            className="pp-danger-btn"
+            onClick={() => onRemovePerson(user.user_email)}
+            disabled={saving || assigning}
+          >
+            Remove person access
+          </button>
         </div>
       )}
     </div>
@@ -527,12 +565,11 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
     const user = users.find((u) => u.user_email === email);
     setSavingUserId(email);
 
-    // Auto-grant or revoke the "admin" permission based on role.
-    let updatedPerms = user?.permissions || [];
+    let updatedPerms = Array.from(
+      new Set([...(user?.permissions || []), ...DEFAULT_SECTION_PERMISSIONS]),
+    );
     if (newRole === "admin") {
-      if (!updatedPerms.includes("admin")) {
-        updatedPerms = [...updatedPerms, "admin"];
-      }
+      updatedPerms = Array.from(new Set([...updatedPerms, "admin"]));
     } else {
       updatedPerms = updatedPerms.filter((p) => p !== "admin");
     }
@@ -544,7 +581,7 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
         body: JSON.stringify({
           user_email: email,
           role: newRole,
-          persona: user?.persona || "developer",
+          persona: user?.persona || "Developer",
           permissions: updatedPerms,
         }),
       });
@@ -569,7 +606,7 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
           body: JSON.stringify({
             user_email: email,
             role: "user",
-            persona: "developer",
+            persona: "Developer",
             permissions,
           }),
         },
@@ -600,7 +637,7 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
         body: JSON.stringify({
           user_email: email,
           role: user.role || "user",
-          persona: user.persona || "developer",
+          persona: user.persona || "Developer",
           permissions,
         }),
       });
@@ -614,7 +651,17 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
     }
   };
 
-  const handlePersonaChange = async (email, persona) => {
+  const handlePersonaChange = (email, persona) => {
+    setUsers((currentUsers) =>
+      currentUsers.map((candidate) =>
+        candidate.user_email === email
+          ? { ...candidate, persona }
+          : candidate,
+      ),
+    );
+  };
+
+  const handlePersonaSave = async (email) => {
     const user = users.find((candidate) => candidate.user_email === email);
     if (!user) return;
 
@@ -626,13 +673,13 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
         body: JSON.stringify({
           user_email: email,
           role: user.role || "user",
-          persona,
+          persona: user.persona || "Developer",
           permissions: user.permissions || [],
         }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await fetchUsers({ showLoader: false });
-      showSnackbar("Persona updated successfully", "success");
+      showSnackbar("Persona label updated successfully", "success");
     } catch (err) {
       showSnackbar(err.message, "error");
     } finally {
@@ -654,6 +701,37 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
       setUserTenants((prev) => ({ ...prev, [email]: updated }));
     } catch (err) {
       showSnackbar(err.message, "error");
+    }
+  };
+
+  const handleRemovePerson = async (email) => {
+    const confirmed = window.confirm(
+      `Remove all saved access for ${email}? This will remove them from every client and clear the current session.`,
+    );
+    if (!confirmed) return;
+
+    setSavingUserId(email);
+    try {
+      const res = await authFetch(
+        `/api/rbac/users?tenant_id=${selectedTenantId}&user_email=${encodeURIComponent(email)}`,
+        { method: "DELETE" },
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        throw new Error(err?.detail ?? `HTTP ${res.status}`);
+      }
+      await fetchUsers({ showLoader: false });
+      setUserTenants((prev) => {
+        const next = { ...prev };
+        delete next[email];
+        return next;
+      });
+      setSelectedEmail((prev) => (prev === email ? null : prev));
+      showSnackbar("Person access removed successfully", "success");
+    } catch (err) {
+      showSnackbar(err.message, "error");
+    } finally {
+      setSavingUserId(null);
     }
   };
 
@@ -883,9 +961,11 @@ function PeoplesPage({ selectedTenantId, showSnackbar }) {
               assigning={assigning}
               onRoleChange={handleRoleChange}
               onPersonaChange={handlePersonaChange}
+              onPersonaSave={handlePersonaSave}
               onAssign={handleAssign}
               onPermissionsSave={handlePermissionsSave}
               onRemoveTenant={handleRemoveTenant}
+              onRemovePerson={handleRemovePerson}
             />
           )}
         </div>

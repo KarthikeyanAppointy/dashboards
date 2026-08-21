@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../auth/AuthContext";
 import "./PeoplesPage.css";
 
-function WelcomePage({ onAccessGranted }) {
+function WelcomePage({ onAccessGranted, missingSections = false }) {
   const { user, authFetch } = useAuth();
   const [admins, setAdmins] = useState([]);
   const [checking, setChecking] = useState(true);
@@ -76,8 +76,9 @@ function WelcomePage({ onAccessGranted }) {
           margin: "0 0 32px",
           lineHeight: 1.5,
         }}>
-          Your account is pending access approval. Please contact one of the
-          administrators below to get access.
+          {missingSections
+            ? "Your account already has client access, but no dashboard sections are enabled yet. Please contact one of the administrators below to grant section permissions."
+            : "Your account is pending access approval. Please contact one of the administrators below to get access."}
         </p>
 
         {checking && (
